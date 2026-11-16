@@ -236,9 +236,10 @@ bool FramePipeline::Impl::Init() {
     inited = true;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
     if (FAILED(hr)) Log("pipeline: falha ao iniciar o WIC (hr=0x%08lX)", (unsigned long)hr);
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    int threads = int(std::min<DWORD>(4, std::max<DWORD>(1, si.dwNumberOfProcessors)));
+    // Medido (1080p, SR+AR e tudo ligado): o trabalho de CPU de um quadro cabe em ~15-25 ms numa thread só
+    // (< 33 ms), e acordar o pool a cada quadro custa bem mais CPU do que ganha (SR+AR: 21% de um núcleo com
+    // 1 thread contra 30% com 4). Por isso o padrão é 1; EOSCAM_THREADS (1..8) permite trocar latência por CPU.
+    int threads = 1;
     wchar_t tv[8];
     if (GetEnvironmentVariableW(L"EOSCAM_THREADS", tv, 8) > 0 && tv[0] >= L'1' && tv[0] <= L'8') threads = tv[0] - L'0';
     pool = std::make_unique<ThreadPool>(threads);

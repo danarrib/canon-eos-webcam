@@ -4,6 +4,7 @@
 #include <cstring>
 #include <mutex>
 
+#include "applog.h"
 #include "nvCVImage.h"
 
 // O proxy do SDK (third_party/maxine/src/NVVideoEffectsProxy.cpp) consulta esta variável para saber
@@ -73,6 +74,41 @@ bool LocateRuntime(std::wstring& dir, std::string& why) {
     return true;
 }
 
+// Faz o CUDA bloquear (dormir) em vez de girar em laço enquanto espera a GPU. O padrão do CUDA
+// (cudaDeviceScheduleAuto) vira "spin" quando há núcleos de sobra, e o SDK do Maxine espera cada estágio de
+// forma síncrona: a thread ficava 100% ocupada durante todo o tempo de GPU. O flag precisa ser definido
+// ANTES de o contexto primário ser criado e no mesmo cudart que o Maxine usa (o da pasta do runtime; o
+// Windows reaproveita o módulo já carregado quando NVVideoEffects.dll pede o mesmo arquivo).
+// Não depende do CUDA Toolkit: só duas funções de cudart64_12.dll, com protótipos declarados aqui.
+void ConfigureCudaBlocking(const std::wstring& dir) {
+    wchar_t v[8];
+    if (GetEnvironmentVariableW(L"EOSCAM_CUDA_SPIN", v, 8) > 0 && v[0] == L'1') {
+        Log("cuda: espera ativa (spin) mantida por EOSCAM_CUDA_SPIN=1");
+        return;
+    }
+    HMODULE rt = LoadLibraryExW((dir + L"\\cudart64_12.dll").c_str(), nullptr,
+                                LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!rt) {
+        Log("cuda: não consegui carregar cudart64_12.dll (erro %lu); espera padrão", GetLastError());
+        return;
+    }
+    using SetFlagsFn = int(__cdecl*)(unsigned int);
+    using GetFlagsFn = int(__cdecl*)(unsigned int*);
+    auto setFlags = reinterpret_cast<SetFlagsFn>(GetProcAddress(rt, "cudaSetDeviceFlags"));
+    auto getFlags = reinterpret_cast<GetFlagsFn>(GetProcAddress(rt, "cudaGetDeviceFlags"));
+    if (!setFlags || !getFlags) {
+        Log("cuda: cudaSetDeviceFlags indisponível; espera padrão");
+        return;
+    }
+    constexpr unsigned int kScheduleBlockingSync = 0x04;  // cudaDeviceScheduleBlockingSync
+    constexpr unsigned int kScheduleMask = 0x07;
+    int r = setFlags(kScheduleBlockingSync);
+    unsigned int f = 0;
+    int r2 = getFlags(&f);
+    Log("cuda: cudaSetDeviceFlags(BlockingSync) -> %d; flags efetivos 0x%X (%s)", r, f,
+        r2 == 0 && (f & kScheduleMask) == kScheduleBlockingSync ? "espera bloqueante" : "NÃO aplicado");
+}
+
 }  // namespace
 
 std::string NvStatusText(NvCV_Status s) {
@@ -127,6 +163,8 @@ bool MaxineRuntime::Init() {
     g_nvVFXSDKPath = path.data();
     SetDllDirectoryW(dir.c_str());
     g_modelDir = Utf8(dir + L"\\models");
+
+    ConfigureCudaBlocking(dir);
 
     unsigned int ver = 0;
     NvCV_Status s = NvVFX_GetVersion(&ver);

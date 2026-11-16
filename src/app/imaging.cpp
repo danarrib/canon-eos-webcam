@@ -12,7 +12,10 @@ namespace eoscam {
 // ---------------------------------------------------------------- ThreadPool
 
 ThreadPool::ThreadPool(int threads) {
-    for (int i = 1; i < threads; i++) workers_.emplace_back([this] { Work(); });
+    for (int i = 1; i < threads; i++) workers_.emplace_back([this] {
+        SetThreadDescription(GetCurrentThread(), L"pool");
+        Work();
+    });
 }
 
 ThreadPool::~ThreadPool() {
@@ -249,7 +252,30 @@ inline void ScaleRow(const uint8_t* plane, int pitch, int srcH, int dstH, int y,
 }
 
 inline void BlendRow(uint8_t* f, const uint8_t* b, const uint8_t* a, int n) {
-    for (int i = 0; i < n; i++) {
+    int i = 0;
+    if (HasAvx2()) {
+        // mesma conta do laço escalar abaixo, sem desvios: t = f*a + b*(255-a) + 128; (t + (t>>8)) >> 8.
+        // Com a = 0 ou 255 o resultado coincide com b ou f, então não precisa tratar os extremos à parte.
+        // t <= 65153 e t + (t>>8) <= 65407 cabem em 16 bits sem sinal.
+        const __m256i c255 = _mm256_set1_epi16(255), c128 = _mm256_set1_epi16(128), zero = _mm256_setzero_si256();
+        for (; i + 32 <= n; i += 32) {
+            __m256i F = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + i));
+            __m256i B = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(b + i));
+            __m256i A = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + i));
+            auto half = [&](__m256i fv, __m256i bv, __m256i av) {
+                __m256i t = _mm256_add_epi16(
+                    _mm256_add_epi16(_mm256_mullo_epi16(fv, av), _mm256_mullo_epi16(bv, _mm256_sub_epi16(c255, av))),
+                    c128);
+                return _mm256_srli_epi16(_mm256_add_epi16(t, _mm256_srli_epi16(t, 8)), 8);
+            };
+            __m256i lo = half(_mm256_unpacklo_epi8(F, zero), _mm256_unpacklo_epi8(B, zero),
+                              _mm256_unpacklo_epi8(A, zero));
+            __m256i hi = half(_mm256_unpackhi_epi8(F, zero), _mm256_unpackhi_epi8(B, zero),
+                              _mm256_unpackhi_epi8(A, zero));
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(f + i), _mm256_packus_epi16(lo, hi));
+        }
+    }
+    for (; i < n; i++) {
         int al = a[i];
         if (al == 255) continue;
         if (al == 0) {
@@ -363,6 +389,92 @@ void RenderBand(const FinalCtx& c, int yStart, int yEnd) {
 
 }  // namespace
 
+// Versão AVX2 do núcleo de BgrToYuv sem ajustes: processa 16 pixels (de duas linhas) por iteração e devolve
+// quantos pixels consumiu (múltiplo de 16); o resto fica para o laço escalar. Produz exatamente os mesmos
+// bytes do laço escalar (mesma aritmética inteira, mesmos arredondamentos).
+static int BgrPairToYuvAvx2(const uint8_t* a, const uint8_t* b, uint8_t* y0, uint8_t* y1, uint8_t* du, uint8_t* dv, int w) {
+    // máscaras de pshufb para separar os canais de 16 pixels BGR (48 bytes = 3 blocos de 16)
+    struct Masks {
+        __m128i m[3][3];  // [canal][bloco]
+        Masks() {
+            for (int c = 0; c < 3; c++) {
+                alignas(16) uint8_t t[3][16];
+                std::memset(t, 0x80, sizeof t);
+                for (int i = 0; i < 16; i++) {
+                    int idx = 3 * i + c;
+                    t[idx / 16][i] = uint8_t(idx % 16);
+                }
+                for (int k = 0; k < 3; k++) m[c][k] = _mm_load_si128(reinterpret_cast<const __m128i*>(t[k]));
+            }
+        }
+    };
+    static const Masks mk;
+    auto split = [&](const uint8_t* row, __m128i& B, __m128i& G, __m128i& R) {
+        __m128i p0 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row));
+        __m128i p1 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row + 16));
+        __m128i p2 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(row + 32));
+        B = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(p0, mk.m[0][0]), _mm_shuffle_epi8(p1, mk.m[0][1])),
+                         _mm_shuffle_epi8(p2, mk.m[0][2]));
+        G = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(p0, mk.m[1][0]), _mm_shuffle_epi8(p1, mk.m[1][1])),
+                         _mm_shuffle_epi8(p2, mk.m[1][2]));
+        R = _mm_or_si128(_mm_or_si128(_mm_shuffle_epi8(p0, mk.m[2][0]), _mm_shuffle_epi8(p1, mk.m[2][1])),
+                         _mm_shuffle_epi8(p2, mk.m[2][2]));
+    };
+    const __m256i k66 = _mm256_set1_epi16(66), k129 = _mm256_set1_epi16(129), k25 = _mm256_set1_epi16(25),
+                  c128 = _mm256_set1_epi16(128), c16 = _mm256_set1_epi16(16), ones = _mm256_set1_epi16(1);
+    const __m256i c128d = _mm256_set1_epi32(128), z = _mm256_setzero_si256(), m255 = _mm256_set1_epi32(255);
+    auto luma = [&](__m256i r, __m256i g, __m256i bl) {
+        __m256i t = _mm256_add_epi16(_mm256_add_epi16(_mm256_mullo_epi16(r, k66), _mm256_mullo_epi16(g, k129)),
+                                     _mm256_add_epi16(_mm256_mullo_epi16(bl, k25), c128));
+        return _mm256_add_epi16(_mm256_srli_epi16(t, 8), c16);  // t < 65536: deslocamento lógico
+    };
+    auto store16 = [](uint8_t* dst, __m256i v) {  // 16 x u16 (0..255) -> 16 bytes
+        __m256i p = _mm256_packus_epi16(v, v);
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst), _mm256_castsi256_si128(p));
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(dst + 8), _mm256_extracti128_si256(p, 1));
+    };
+    int x = 0;
+    for (; x + 16 <= w; x += 16) {
+        __m128i B0, G0, R0, B1, G1, R1;
+        split(a + size_t(x) * 3, B0, G0, R0);
+        split(b + size_t(x) * 3, B1, G1, R1);
+        __m256i b0 = _mm256_cvtepu8_epi16(B0), g0 = _mm256_cvtepu8_epi16(G0), r0 = _mm256_cvtepu8_epi16(R0);
+        __m256i b1 = _mm256_cvtepu8_epi16(B1), g1 = _mm256_cvtepu8_epi16(G1), r1 = _mm256_cvtepu8_epi16(R1);
+        store16(y0 + x, luma(r0, g0, b0));
+        store16(y1 + x, luma(r1, g1, b1));
+        // soma 2x2: linhas somadas e pares horizontais somados (madd) -> 8 valores de 32 bits
+        __m256i sb = _mm256_madd_epi16(_mm256_add_epi16(b0, b1), ones);
+        __m256i sg = _mm256_madd_epi16(_mm256_add_epi16(g0, g1), ones);
+        __m256i sr = _mm256_madd_epi16(_mm256_add_epi16(r0, r1), ones);
+        sb = _mm256_srli_epi32(sb, 2);
+        sg = _mm256_srli_epi32(sg, 2);
+        sr = _mm256_srli_epi32(sr, 2);
+        __m256i cb = _mm256_add_epi32(
+            _mm256_srai_epi32(
+                _mm256_add_epi32(_mm256_add_epi32(_mm256_mullo_epi32(sr, _mm256_set1_epi32(-38)),
+                                                  _mm256_mullo_epi32(sg, _mm256_set1_epi32(-74))),
+                                 _mm256_add_epi32(_mm256_mullo_epi32(sb, _mm256_set1_epi32(112)), c128d)),
+                8),
+            c128d);
+        __m256i cr = _mm256_add_epi32(
+            _mm256_srai_epi32(
+                _mm256_add_epi32(_mm256_add_epi32(_mm256_mullo_epi32(sr, _mm256_set1_epi32(112)),
+                                                  _mm256_mullo_epi32(sg, _mm256_set1_epi32(-94))),
+                                 _mm256_add_epi32(_mm256_mullo_epi32(sb, _mm256_set1_epi32(-18)), c128d)),
+                8),
+            c128d);
+        cb = _mm256_min_epi32(_mm256_max_epi32(cb, z), m255);
+        cr = _mm256_min_epi32(_mm256_max_epi32(cr, z), m255);
+        auto pack8 = [](__m256i v, uint8_t* dst) {  // 8 x s32 (0..255) -> 8 bytes
+            __m128i p = _mm_packus_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+            _mm_storel_epi64(reinterpret_cast<__m128i*>(dst), _mm_packus_epi16(p, p));
+        };
+        pack8(cb, du + x / 2);
+        pack8(cr, dv + x / 2);
+    }
+    return x;
+}
+
 // BGR u8 -> planos Y (largura x altura) e U, V (metade da resolução, média 2x2), BT.601 de faixa
 // limitada. w e h precisam ser pares. Aplica os ajustes (LUT + saturação) na passada.
 void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj, YuvImage& out, ThreadPool& pool) {
@@ -386,7 +498,9 @@ void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj,
             uint8_t* y1 = y0 + w;
             uint8_t* du = out.u.data() + size_t(pr) * (w / 2);
             uint8_t* dv = out.v.data() + size_t(pr) * (w / 2);
-            for (int x = 0; x < w; x += 2) {
+            int xStart = 0;
+            if (!useAdj && HasAvx2()) xStart = BgrPairToYuvAvx2(a, b, y0, y1, du, dv, w);
+            for (int x = xStart; x < w; x += 2) {
                 int b00 = a[x * 3], g00 = a[x * 3 + 1], r00 = a[x * 3 + 2];
                 int b01 = a[x * 3 + 3], g01 = a[x * 3 + 4], r01 = a[x * 3 + 5];
                 int b10 = b[x * 3], g10 = b[x * 3 + 1], r10 = b[x * 3 + 2];

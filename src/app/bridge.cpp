@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <string>
+
+#include <tlhelp32.h>
 
 #include "applog.h"
 
@@ -25,6 +28,37 @@ double ProcessCpuSeconds() {
     FILETIME c, e, k, u;
     GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
     return FtSec(k) + FtSec(u);
+}
+
+// Diagnóstico: CPU (kernel+usuário) acumulada de cada thread do processo, com o nome dado por
+// SetThreadDescription. Serve para ver qual thread gasta CPU (trabalho real x espera ativa).
+void LogThreadCpu() {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof te;
+    DWORD pid = GetCurrentProcessId();
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid) continue;
+        HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+        if (!h) continue;
+        FILETIME c, e, k, u;
+        if (GetThreadTimes(h, &c, &e, &k, &u)) {
+            double cpu = FtSec(k) + FtSec(u);
+            if (cpu >= 0.05) {
+                std::string name;
+                PWSTR d = nullptr;
+                if (SUCCEEDED(GetThreadDescription(h, &d)) && d) {
+                    for (const wchar_t* p = d; *p; p++) name += *p < 128 ? char(*p) : '?';
+                    LocalFree(d);
+                }
+                Log("  thread %lu %s: CPU %.2f s (usuário %.2f, kernel %.2f)", (unsigned long)te.th32ThreadID,
+                    name.c_str(), cpu, FtSec(u), FtSec(k));
+            }
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
 }
 
 }  // namespace
@@ -109,6 +143,7 @@ void Bridge::RunCameraCommands() {
 
 void Bridge::ProcessLoop() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    SetThreadDescription(GetCurrentThread(), L"processamento");
     pipeline_.Init();
     std::vector<uint8_t> jpeg(1 << 20), nv12(kFrameBytes);
     uint64_t lastReload = 0, taken = 0;
@@ -151,6 +186,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
     double cpuBase = ProcessCpuSeconds();
     uint64_t cpuTick = NowTick();
 
+    SetThreadDescription(GetCurrentThread(), L"captura");
     proc_ = std::thread([this] { ProcessLoop(); });
 
     Log("eoscam rodando. Ctrl+C para sair.");
@@ -293,6 +329,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
                 (unsigned long long)ps.frames, ps.msDecode, ps.msUpload, ps.msDenoise, ps.msArtifact, ps.msSuperRes,
                 ps.msSegment, ps.msDownload, ps.msFinal, ps.msTotal, cpu / secs * 100.0);
     }
+    LogThreadCpu();
     Log("Encerrando...");
     stop_ = true;
     SetEvent(mboxEvent_);

@@ -1,5 +1,8 @@
-// Canal de quadros entre eoscam.exe (sessão do usuário, fala com a câmera) e
-// eoscam-source.dll (carregada pelo Frame Server, conta LocalService, sessão 0).
+// Canal de quadros entre eoscam.exe (sessão do usuário, fala com a câmera, processa a imagem na
+// GPU) e eoscam-source.dll (carregada pelo Frame Server, conta LocalService, sessão 0).
+//
+// Layout v2: os slots carregam quadros NV12 1920x1080 já prontos (a v1 mandava JPEGs do Live View).
+// Os nomes do mapeamento/evento terminam em "2" para a v1 instalada e a v2 nunca se confundirem.
 //
 // A memória compartilhada fica no namespace Global\. Criar objetos ali exige
 // SeCreateGlobalPrivilege, que serviços têm e usuários comuns não: por isso a DLL
@@ -12,7 +15,6 @@
 
 #include <cstdint>
 #include <cstring>
-#include <vector>
 
 namespace eoscam {
 
@@ -28,10 +30,10 @@ inline bool UseLocalNamespace() {
     return GetEnvironmentVariableW(L"EOSCAM_LOCAL", v, 8) > 0 && v[0] == L'1';
 }
 inline const wchar_t* MappingName() {
-    return UseLocalNamespace() ? L"Local\\EosCamFrames1" : L"Global\\EosCamFrames1";
+    return UseLocalNamespace() ? L"Local\\EosCamFrames2" : L"Global\\EosCamFrames2";
 }
 inline const wchar_t* EventName() {
-    return UseLocalNamespace() ? L"Local\\EosCamFrameReady1" : L"Global\\EosCamFrameReady1";
+    return UseLocalNamespace() ? L"Local\\EosCamFrameReady2" : L"Global\\EosCamFrameReady2";
 }
 inline constexpr wchar_t kDataDir[] = L"C:\\ProgramData\\EosCam";
 
@@ -39,9 +41,15 @@ inline constexpr wchar_t kDataDir[] = L"C:\\ProgramData\\EosCam";
 inline constexpr wchar_t kSddl[] = L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GA;;;AU)";
 
 constexpr uint32_t kMagic = 0x4D414345;  // "ECAM"
-constexpr uint32_t kLayoutVersion = 1;
-constexpr uint32_t kMaxJpeg = 2u << 20;
+constexpr uint32_t kLayoutVersion = 2;
 constexpr int kSlotCount = 3;
+
+// Formato único oferecido pela câmera virtual: NV12 1920x1080 (3.110.400 bytes).
+constexpr uint32_t kFrameWidth = 1920;
+constexpr uint32_t kFrameHeight = 1080;
+constexpr uint32_t kFrameBytes = kFrameWidth * kFrameHeight * 3 / 2;
+constexpr uint32_t kMaxFrameBytes = 4u << 20;  // tamanho máximo do slot
+constexpr uint32_t kFourccNV12 = 0x3231564E;   // "NV12"
 
 // Consumidor considerado ativo se deu sinal de vida há menos que isso.
 constexpr uint64_t kConsumerTimeoutMs = 2500;
@@ -58,11 +66,24 @@ enum class ProducerState : LONG {
 
 struct alignas(64) FrameSlot {
     volatile LONG seq;  // seqlock: ímpar enquanto está sendo escrito
-    uint32_t size;
+    uint32_t size;      // bytes válidos em data
     uint64_t frameNumber;
     uint64_t captureTick;
-    uint8_t data[kMaxJpeg];
+    uint32_t format;    // kFourccNV12
+    uint32_t width;
+    uint32_t height;
+    uint32_t stride;    // bytes por linha do plano Y
+    uint8_t data[kMaxFrameBytes];
 };
+
+// Cabeçalho de um quadro lido do canal.
+struct FrameMeta {
+    uint64_t frameNumber = 0;
+    uint64_t captureTick = 0;
+    uint32_t format = 0, width = 0, height = 0, stride = 0, size = 0;
+};
+
+enum class ReadResult { None, Ok, Torn, Incompatible };
 
 struct alignas(64) SharedHeader {
     uint32_t magic;
@@ -146,20 +167,26 @@ public:
     HANDLE Event() const { return event_; }
 
     // ---- lado produtor (app)
-    void Publish(const uint8_t* jpeg, size_t n, uint64_t captureTick) {
-        if (!frames_ || n == 0 || n > kMaxJpeg) return;
-        SharedHeader& h = frames_->header;
-        LONG cur = h.latestSlot;
+    // Publica um quadro NV12 (w x h, stride = w). Copia para o próximo slot do anel.
+    void PublishNv12(const uint8_t* nv12, uint32_t w, uint32_t h, uint64_t captureTick) {
+        uint32_t n = w * h * 3 / 2;
+        if (!frames_ || !nv12 || n == 0 || n > kMaxFrameBytes) return;
+        SharedHeader& hd = frames_->header;
+        LONG cur = hd.latestSlot;
         int slot = (cur < 0 || cur >= kSlotCount) ? 0 : (cur + 1) % kSlotCount;
         FrameSlot& s = frames_->slots[slot];
         InterlockedIncrement(&s.seq);  // ímpar: escrevendo
-        std::memcpy(s.data, jpeg, n);
-        s.size = uint32_t(n);
-        s.frameNumber = uint64_t(h.frameNumber) + 1;
+        std::memcpy(s.data, nv12, n);
+        s.size = n;
+        s.format = kFourccNV12;
+        s.width = w;
+        s.height = h;
+        s.stride = w;
+        s.frameNumber = uint64_t(hd.frameNumber) + 1;
         s.captureTick = captureTick;
         InterlockedIncrement(&s.seq);  // par: pronto
-        InterlockedExchange(&h.latestSlot, slot);
-        InterlockedIncrement64(&h.frameNumber);
+        InterlockedExchange(&hd.latestSlot, slot);
+        InterlockedIncrement64(&hd.frameNumber);
         if (event_) SetEvent(event_);
     }
 
@@ -195,24 +222,35 @@ public:
         return frames_ ? ProducerState(frames_->header.producerState) : ProducerState::Unknown;
     }
 
-    bool ReadLatest(std::vector<uint8_t>& out, uint64_t& frameNumber, uint64_t& captureTick) {
-        if (!frames_) return false;
+    // Copia o quadro mais recente para dst (dstBytes bytes) se ele for NV12 expectW x expectH.
+    // Incompatible: o produtor mandou outro formato/tamanho (versões diferentes do eoscam).
+    ReadResult ReadLatest(uint8_t* dst, uint32_t dstBytes, uint32_t expectW, uint32_t expectH, FrameMeta& meta) {
+        if (!frames_) return ReadResult::None;
         LONG slot = frames_->header.latestSlot;
-        if (slot < 0 || slot >= kSlotCount) return false;
+        if (slot < 0 || slot >= kSlotCount) return ReadResult::None;
         FrameSlot& s = frames_->slots[slot];
         for (int attempt = 0; attempt < 8; attempt++) {
             LONG a = s.seq;
             if (a & 1) { YieldProcessor(); continue; }
             MemoryBarrier();
-            uint32_t n = s.size;
-            if (n == 0 || n > kMaxJpeg) return false;
-            out.assign(s.data, s.data + n);
-            frameNumber = s.frameNumber;
-            captureTick = s.captureTick;
+            FrameMeta m;
+            m.size = s.size;
+            m.format = s.format;
+            m.width = s.width;
+            m.height = s.height;
+            m.stride = s.stride;
+            m.frameNumber = s.frameNumber;
+            m.captureTick = s.captureTick;
+            bool ok = m.format == kFourccNV12 && m.width == expectW && m.height == expectH &&
+                      m.stride == expectW && m.size == expectW * expectH * 3 / 2 && m.size <= dstBytes &&
+                      m.size <= kMaxFrameBytes;
+            if (ok) std::memcpy(dst, s.data, m.size);
             MemoryBarrier();
-            if (s.seq == a) return true;
+            if (s.seq != a) continue;
+            meta = m;
+            return ok ? ReadResult::Ok : ReadResult::Incompatible;
         }
-        return false;
+        return ReadResult::Torn;
     }
 
 private:

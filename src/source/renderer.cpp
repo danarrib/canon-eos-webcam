@@ -4,71 +4,14 @@
 
 #include "color.h"
 
-using Microsoft::WRL::ComPtr;
-
 namespace eoscam {
 
 HRESULT FrameRenderer::Init(UINT width, UINT height) {
     w_ = width;
     h_ = height;
-    bgra_.assign(size_t(w_) * h_ * 4, 0);
     nv12_.assign(size_t(w_) * h_ * 3 / 2, 0);
     lastMessage_.clear();
-    return CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic_));
-}
-
-bool FrameRenderer::RenderJpeg(const uint8_t* jpeg, size_t size) {
-    lastError_ = E_NOT_VALID_STATE;
-    lastStep_ = "init";
-    if (!wic_ || !w_ || !h_) return false;
-    HRESULT hr;
-#define STEP(name, expr) do { lastStep_ = name; hr = (expr); if (FAILED(hr)) { lastError_ = hr; return false; } } while (0)
-    ComPtr<IWICStream> stream;
-    ComPtr<IWICBitmapDecoder> decoder;
-    ComPtr<IWICBitmapFrameDecode> frame;
-    STEP("CreateStream", wic_->CreateStream(&stream));
-    STEP("InitializeFromMemory", stream->InitializeFromMemory(const_cast<BYTE*>(jpeg), DWORD(size)));
-    STEP("CreateDecoderFromStream", wic_->CreateDecoderFromStream(stream.Get(), &GUID_ContainerFormatJpeg,
-                                                                  WICDecodeMetadataCacheOnDemand, &decoder));
-    STEP("GetFrame", decoder->GetFrame(0, &frame));
-
-    UINT sw = 0, sh = 0;
-    frame->GetSize(&sw, &sh);
-    if (!sw || !sh) return false;
-
-    // Recorte na proporção de saída: na horizontal, centralizado; na vertical, ancorado na
-    // base (descarta só o topo da imagem, que costuma ser parede/teto acima da cabeça).
-    double target = double(w_) / h_;
-    UINT cw = sw, ch = sh;
-    if (double(sw) / sh > target) cw = UINT(std::lround(sh * target)) & ~1u;
-    else ch = UINT(std::lround(sw / target)) & ~1u;
-    WICRect rc{INT((sw - cw) / 2), INT(sh - ch), INT(cw), INT(ch)};
-
-    ComPtr<IWICBitmapSource> src = frame;
-    if (cw != sw || ch != sh) {
-        ComPtr<IWICBitmapClipper> clip;
-        STEP("CreateBitmapClipper", wic_->CreateBitmapClipper(&clip));
-        STEP("Clipper::Initialize", clip->Initialize(src.Get(), &rc));
-        src = clip;
-    }
-    if (cw != w_ || ch != h_) {
-        ComPtr<IWICBitmapScaler> scaler;
-        auto mode = (w_ > cw) ? WICBitmapInterpolationModeLinear : WICBitmapInterpolationModeFant;
-        STEP("CreateBitmapScaler", wic_->CreateBitmapScaler(&scaler));
-        STEP("Scaler::Initialize", scaler->Initialize(src.Get(), w_, h_, mode));
-        src = scaler;
-    }
-    ComPtr<IWICFormatConverter> conv;
-    STEP("CreateFormatConverter", wic_->CreateFormatConverter(&conv));
-    STEP("Converter::Initialize", conv->Initialize(src.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
-                                                   nullptr, 0, WICBitmapPaletteTypeCustom));
-    STEP("CopyPixels", conv->CopyPixels(nullptr, w_ * 4, UINT(bgra_.size()), bgra_.data()));
-#undef STEP
-
-    BgraToNv12(bgra_.data(), int(w_ * 4), int(w_), int(h_), nv12_.data());
-    lastMessage_.clear();
-    lastError_ = S_OK;
-    return true;
+    return S_OK;
 }
 
 void FrameRenderer::RenderMessage(const std::wstring& title, const std::wstring& detail) {

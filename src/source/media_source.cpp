@@ -44,9 +44,10 @@ namespace eoscam {
 namespace {
 
 struct VideoSize { UINT w, h; };
-// Só 1280x720: com várias opções, alguns programas abriam primeiro em 640x480 (4:3) e trocavam
-// para 16:9 um segundo depois. A câmera entrega 1056x704; 720p é um leve aumento do recorte 16:9.
-constexpr VideoSize kSizes[] = {{1280, 720}};
+// Só 1920x1080: com várias opções, alguns programas abriam primeiro em 640x480 (4:3) e trocavam
+// para 16:9 um segundo depois. A ponte (eoscam.exe) entrega o quadro NV12 1920x1080 já processado
+// na GPU (recorte 16:9, efeitos de IA, ajustes de imagem e fundo); esta DLL só copia o quadro.
+constexpr VideoSize kSizes[] = {{kFrameWidth, kFrameHeight}};
 constexpr UINT kFps = 30;
 
 HRESULT CreateNv12Type(UINT w, UINT h, IMFMediaType** out) {
@@ -336,14 +337,14 @@ private:
         }
         FrameRenderer renderer;
         HRESULT hr = renderer.Init(w, h);
-        if (FAILED(hr)) Log("stream: falha ao iniciar WIC (hr=0x%08lX)", (unsigned long)hr);
+        if (FAILED(hr)) Log("stream: falha ao iniciar o renderizador (hr=0x%08lX)", (unsigned long)hr);
 
         SharedChannel chan;
         uint64_t lastOpenTry = 0, shownFrame = 0, lastLiveTick = 0, lastDelivery = 0;
         bool haveLive = false, loggedOpenError = false;
-        uint64_t statsTick = NowTick(), statDelivered = 0, statLive = 0, statRenderFail = 0, statReadFail = 0;
-        double statRenderMs = 0;
-        std::vector<uint8_t> jpeg;
+        uint64_t statsTick = NowTick(), statDelivered = 0, statLive = 0, statIncompat = 0, statReadFail = 0;
+        double statCopyMs = 0;
+        bool incompatible = false;
         std::wstring title, detail;
         LARGE_INTEGER qpf;
         QueryPerformanceFrequency(&qpf);
@@ -381,28 +382,43 @@ private:
 
             bool live = false;
             if (latest != shownFrame) {
-                uint64_t fn = 0, ct = 0;
-                if (chan.ReadLatest(jpeg, fn, ct)) {
-                    shownFrame = latest;
-                    LARGE_INTEGER a, b;
-                    QueryPerformanceCounter(&a);
-                    if (renderer.RenderJpeg(jpeg.data(), jpeg.size())) {
-                        QueryPerformanceCounter(&b);
-                        statRenderMs += double(b.QuadPart - a.QuadPart) * 1000.0 / double(qpf.QuadPart);
-                        if (!haveLive) Log("stream: imagem ao vivo (quadro %llu, %zu bytes)", (unsigned long long)fn, jpeg.size());
+                FrameMeta meta;
+                LARGE_INTEGER a, b;
+                QueryPerformanceCounter(&a);
+                ReadResult rr = chan.ReadLatest(renderer.Nv12Data(), renderer.Nv12Bytes(), w, h, meta);
+                QueryPerformanceCounter(&b);
+                switch (rr) {
+                    case ReadResult::Ok:
+                        shownFrame = latest;
+                        statCopyMs += double(b.QuadPart - a.QuadPart) * 1000.0 / double(qpf.QuadPart);
+                        renderer.InvalidateMessage();
+                        if (!haveLive) Log("stream: imagem ao vivo (quadro %llu)", (unsigned long long)meta.frameNumber);
                         haveLive = live = true;
+                        incompatible = false;
                         lastLiveTick = NowTick();
-                    } else if (++statRenderFail <= 5) {
-                        Log("stream: falha ao decodificar quadro %llu (%zu bytes) em %s: hr=0x%08lX",
-                            (unsigned long long)fn, jpeg.size(), renderer.LastStep(), (unsigned long)renderer.LastError());
-                    }
-                } else if (++statReadFail <= 5) {
-                    Log("stream: falha ao ler quadro %llu do canal", (unsigned long long)latest);
+                        break;
+                    case ReadResult::Incompatible:
+                        shownFrame = latest;
+                        incompatible = true;
+                        if (++statIncompat <= 5)
+                            Log("stream: quadro %llu incompatível (formato %08lX %ux%u, %u bytes; esperado NV12 %ux%u)",
+                                (unsigned long long)meta.frameNumber, (unsigned long)meta.format, meta.width,
+                                meta.height, meta.size, w, h);
+                        break;
+                    default:
+                        if (++statReadFail <= 5)
+                            Log("stream: falha ao ler quadro %llu do canal", (unsigned long long)latest);
+                        break;
                 }
             }
             if (!live && (!haveLive || NowTick() - lastLiveTick > 1500)) {
                 haveLive = false;
-                DescribeState(chan, title, detail);
+                if (incompatible) {
+                    title = L"Versões incompatíveis do eoscam";
+                    detail = L"A ponte (eoscam.exe) e a câmera virtual são de versões diferentes: reinstale o eoscam.";
+                } else {
+                    DescribeState(chan, title, detail);
+                }
                 renderer.RenderMessage(title, detail);
             }
 
@@ -417,14 +433,14 @@ private:
 
             if (NowTick() - statsTick >= 10000) {
                 double secs = (NowTick() - statsTick) / 1000.0;
-                Log("stream: %.1f quadros/s entregues (%.1f da câmera), decodificação média %.2f ms, "
-                    "falhas leitura/decodificação %llu/%llu, produtor %s estado %ld",
-                    statDelivered / secs, statLive / secs, statLive ? statRenderMs / statLive : 0.0,
-                    (unsigned long long)statReadFail, (unsigned long long)statRenderFail,
+                Log("stream: %.1f quadros/s entregues (%.1f da câmera), cópia média %.2f ms, "
+                    "falhas leitura/incompatíveis %llu/%llu, produtor %s estado %ld",
+                    statDelivered / secs, statLive / secs, statLive ? statCopyMs / statLive : 0.0,
+                    (unsigned long long)statReadFail, (unsigned long long)statIncompat,
                     chan.ProducerAlive() ? "vivo" : "ausente", long(chan.Producer()));
                 statsTick = NowTick();
                 statDelivered = statLive = 0;
-                statRenderMs = 0;
+                statCopyMs = 0;
             }
         }
         Log("stream: worker encerrado");

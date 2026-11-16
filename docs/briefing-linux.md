@@ -7,15 +7,19 @@ Hyprland), com um único programa nosso que:
 
 - fala **direto com a câmera pelo protocolo PTP** (comandos de fabricante da Canon), via **libusb**;
 - decodifica o JPEG do Live View, recorta em 16:9 e entrega **1280×720 a ~30 fps**;
-- publica a imagem como uma **câmera virtual do PipeWire** (nó `Video/Source`), sem módulo de kernel.
+- publica a imagem como uma **câmera virtual do PipeWire** (nó `Video/Source`), sem módulo de kernel;
+- tem um **painel de ajustes** com prévia ao vivo, como o da versão para Windows. Ele cuida de duas coisas: os
+  **ajustes de imagem** feitos pelo eoscam (brilho, contraste, gamma, temperatura, tom e saturação) e os
+  **ajustes da câmera**, gravados na própria Canon via PTP (compensação de exposição, ISO, balanço de branco,
+  temperatura de cor, Picture Style com contraste/nitidez/saturação/tom de cor e Auto Lighting Optimizer).
 
 O que o substitui: a cadeia atual `gphoto2 --capture-movie | ffmpeg | v4l2loopback`, que quebra a cada
 atualização (módulo DKMS do v4l2loopback, gvfs pegando a câmera, três processos ligados por pipe sem recuperação).
 
 **Proibido usar:** gphoto2/libgphoto2, ffmpeg, v4l2loopback, akvcam, DKMS ou qualquer módulo de kernel. As únicas
 dependências permitidas são bibliotecas de espaço de usuário com ABI estável dos repositórios oficiais do Arch:
-`libusb` (1.0), `libjpeg-turbo` (API TurboJPEG) e `libpipewire` (0.3). O compilador e o CMake são dependências de
-compilação.
+`libusb` (1.0), `libjpeg-turbo` (API TurboJPEG) e `libpipewire` (0.3) no serviço, mais **`gtk4`** só no painel
+(o serviço não pode depender do GTK). O compilador e o CMake são dependências de compilação.
 
 ## Contexto: a versão para Windows
 
@@ -26,7 +30,10 @@ padrão do Windows e o `MFCreateVirtualCamera`. Os arquivos de referência são:
   referência principal.** Lá o transporte é WPD; aqui passa a ser USB bulk via libusb, mas a sequência de
   comandos, os parâmetros e o parsing são os mesmos.
 - `src/app/bridge.cpp`: as threads de captura e processamento, o Live View sob demanda e a reconexão.
-- `src/app/pipeline.cpp` / `imaging.cpp`: o recorte 16:9 ancorado na base, a escala e a conversão para YUV.
+- `src/app/pipeline.cpp` / `imaging.cpp`: o recorte 16:9 ancorado na base, os ajustes de imagem (`BuildAdjust`
+  e `AdjustPixel`), a escala e a conversão para YUV.
+- `src/app/panel.cpp`: o painel (controles, nomes dos valores da câmera, Picture Style). `src/app/settings.*`: a
+  gravação das configurações com debounce e o recarregamento quando o arquivo é editado por fora.
 - `README.md` e `CLAUDE.md`: visão geral e convenções.
 
 Não altere nada do código do Windows. O código para Linux fica numa pasta própria (`linux/`), com o seu próprio
@@ -44,19 +51,30 @@ Não altere nada do código do Windows. O código para Linux fica numa pasta pr�
 
 ## Arquitetura
 
-Um único processo, `eoscam`, rodando como **serviço de usuário do systemd** (`systemctl --user`). São três
-threads, no mesmo espírito da versão para Windows:
+Dois programas:
+
+- **`eoscam`**: o serviço, rodando como **serviço de usuário do systemd** (`systemctl --user`). Faz todo o
+  trabalho e é o único que fala com a câmera.
+- **`eoscam-panel`**: o painel de ajustes (GTK4), aberto pelo usuário quando quer. Não fala com a câmera nem
+  processa imagem: conversa com o serviço por um socket Unix (ver "Canal de controle"). Fechar o painel ou ele
+  travar não afeta a webcam.
+
+O serviço tem quatro threads, no mesmo espírito da versão para Windows:
 
 1. **Captura**: é a **única dona da sessão USB/PTP**. Conecta, liga o Live View, busca os JPEGs em loop, lê os
    eventos da câmera de tempos em tempos e reconecta sozinha se algo der errado. Cada JPEG novo vai para uma
-   "caixa de correio" de um item só (sobrescreve o anterior).
+   "caixa de correio" de um item só (sobrescreve o anterior). **Entre um quadro e outro**, ela executa os
+   comandos de escrita de propriedades enfileirados pelo painel. Nenhuma outra thread toca na câmera.
 2. **Processamento**: pega sempre o JPEG **mais recente** e descarta os outros. Assim a captura segue a ~30 fps
    mesmo se o processamento atrasar. Faz decodificação → recorte → escala → YUV e entrega o quadro à saída.
 3. **PipeWire**: o `pw_thread_loop` com o stream de saída.
+4. **Controle**: atende o socket do painel.
 
 ### Live View sob demanda
 
-Como no Windows, o Live View **só fica ligado enquanto alguém consome a câmera**:
+Como no Windows, o Live View **só fica ligado enquanto alguém consome a câmera**. Conta como consumidor o
+Chrome (via PipeWire) **ou o painel aberto** (para a prévia e os ajustes da câmera funcionarem mesmo sem
+nenhuma chamada em andamento):
 
 - quando o stream do PipeWire passa para `PW_STREAM_STATE_STREAMING` (um consumidor, como o Chrome, ligou),
   a captura conecta e liga o Live View;
@@ -169,8 +187,10 @@ O quadro do Live View da T3 é um JPEG de **1056×704** a ~30 fps.
    `tj3DecompressToYUVPlanes8`, o que for mais simples e barato).
 2. **Recorte 16:9 ancorado na base:** a largura inteira (1056) e as **594** linhas de baixo, descartando as 110
    de cima (normalmente parede/teto). A posição do recorte (base/centro/topo) deve ser uma opção de configuração.
-3. Escale para **1280×720** (bilinear basta) e converta para o formato do PipeWire.
-4. Se a decodificação de um quadro falhar, descarte-o sem derrubar nada.
+3. **Ajustes de imagem** (ver a seção própria), aplicados na resolução do recorte, que é menor que a de saída e
+   portanto mais barata. Pule a etapa quando todos os ajustes estiverem no padrão.
+4. Escale para **1280×720** (bilinear basta) e converta para o formato do PipeWire.
+5. Se a decodificação de um quadro falhar, descarte-o sem derrubar nada.
 
 A 720p isso é leve para a CPU. Meça e registre no log a média de quadros/s e o tempo por quadro a cada 60 s,
 como faz a versão para Windows. Deixe o pipeline organizado em etapas (decodificação → recorte → [efeitos] →
@@ -195,6 +215,162 @@ escala → conversão), com um ponto claro para inserir efeitos depois (ver "Fut
 `xdg-desktop-portal` está rodando e que, ao abrir o Meet, aparece "Canon EOS (eoscam)" na lista de câmeras. Peça
 ao usuário para fazer esse teste final no navegador, sem automatizar cliques.
 
+## Ajustes de imagem (feitos pelo eoscam)
+
+São os mesmos seis da versão para Windows, com as mesmas faixas e fórmulas, para um `settings.ini` valer nos
+dois sistemas:
+
+| Ajuste | Faixa | Padrão |
+|---|---|---|
+| Brilho | −100..+100 | 0 |
+| Contraste | −100..+100 | 0 |
+| Gamma | 0,50..2,00 | 1,00 |
+| Temperatura (negativo = frio/azulado, positivo = quente) | −100..+100 | 0 |
+| Tom (negativo = verde, positivo = magenta) | −100..+100 | 0 |
+| Saturação | 0..200 % | 100 % |
+
+Implementação (copiada de `BuildAdjust`/`AdjustPixel` em `src/app/imaging.cpp`): uma LUT de 256 entradas por
+canal, recalculada só quando os ajustes mudam, mais a saturação em ponto fixo.
+
+```
+tg = temperatura/100 × 0,25        mg = tom/100 × 0,25
+ganho R = 1 + tg     ganho G = 1 − mg     ganho B = 1 − tg
+c  = contraste × 2,55
+cf = 259 × (c + 255) / (255 × (259 − c))
+br = brilho/100 × 0,4
+para cada canal e i em 0..255:
+    x = min(1, i/255 × ganho do canal)
+    x = x ^ (1/gamma)
+    x = (x − 0,5) × cf + 0,5 + br
+    lut[i] = round(clamp(x, 0, 1) × 255)
+
+por pixel: r,g,b = lut_r[r], lut_g[g], lut_b[b]
+se saturação ≠ 100 %:
+    s = round(saturação × 128 / 100)
+    cinza = (54 r + 183 g + 19 b) >> 8
+    cada canal = clamp(cinza + ((canal − cinza) × s >> 7))
+```
+
+Os valores ficam em `~/.config/eoscam/settings.ini`, seção `[image]`, com as chaves `brightness`, `contrast`,
+`gamma`, `temperature`, `tint` e `saturation` (as mesmas do Windows). O serviço grava ~0,5 s depois da última
+mudança (debounce), e uma edição feita à mão no arquivo é recarregada sozinha (inotify). Assim dá para testar
+tudo sem o painel. Valores ausentes ou inválidos voltam ao padrão.
+
+## Ajustes da câmera (PTP)
+
+Estes **não** vão para o `settings.ini`: ficam guardados na própria câmera. Os valores possíveis vêm da câmera,
+e **só ficam habilitados os ajustes que o modo atual (a roda de modos da câmera) anuncia**.
+
+### Leitura: eventos do `GetEvent`
+
+O buffer do `GetEvent` (`0x9116`) é uma sequência de registros `[u32 tamanho][u32 tipo][dados]`, terminada
+por um registro de tamanho 8 e tipo 0. Interessam dois tipos (offsets contados do início do registro):
+
+- **`0xC189` PropValueChanged**: `[8] u32 código da propriedade`, `[12] u32 valor` (ou uma estrutura, no caso do
+  Picture Style). Guarde o valor e também os bytes crus de `[12]` até o fim do registro.
+- **`0xC18A` AvailListChanged**: `[8] u32 código`, `[12] u32 tipo de dado`, `[16] u32 quantidade`,
+  `[20] valores`, 4 bytes cada. É a lista de valores permitidos no modo atual.
+
+Mantenha um cache `código → {valor, lista, bytes crus}` com um contador de geração que sobe a cada mudança. O
+primeiro `GetEvent` depois de ligar o modo de eventos traz o estado completo. Com o painel aberto, leia os
+eventos a cada **250 ms** (em vez de 1 s), para o painel refletir rápido o que mudar na câmera, inclusive pelos
+botões dela.
+
+`EOSCAM_DUMP_EVENTS=1` deve imprimir todos os eventos `0xC189`/`0xC18A` em hexadecimal, para diagnóstico.
+
+### Escrita
+
+`SetDevicePropValueEx` (`0x9110`), dados `[u32 12][u32 propriedade][u32 valor]`. Para o Picture Style, dados
+`[u32 tamanho total][u32 propriedade][palavras u32...]`. A resposta `0x2001` significa aceito. Qualquer outra
+significa que a câmera recusou (é normal em alguns modos), e o painel deve mostrar "a câmera recusou" em vez de
+um código. Depois de uma escrita aceita, atualize o cache de forma otimista; o `PropValueChanged` seguinte
+confirma ou corrige.
+
+### Propriedades e codificações (conferidas na T3)
+
+| Ajuste | Propriedade | Valores |
+|---|---|---|
+| Compensação de exposição | `0xD104` | byte com sinal em 1/8 de EV; a câmera usa ±3 e ±5 para 1/3 e 2/3. Mostrar como "−1 2/3 EV", "0", "+1/3 EV" (arredondar `n×3/8` para terços) |
+| ISO | `0xD103` | `0x00` e `0x01` = Auto, `0x48` = 100, `0x50` = 200, `0x58` = 400, `0x60` = 800, `0x68` = 1600, `0x70` = 3200, `0x78` = 6400 (tabela completa em `panel.cpp`, `kIsoNames`). Só aparece nos modos P/Tv/Av/M; nos outros, mostrar "(automático)" |
+| Balanço de branco | `0xD109` | 0 Automático, 1 Luz do dia, 8 Sombra, 2 Nublado, 3 Tungstênio, 4 Fluorescente, 5 Flash, 6 Personalizado, 9 Temperatura de cor (K), 10–12 Personalizado PC-1..3 |
+| Temperatura de cor | `0xD10A` | Kelvin, 2500..10000. Habilitado só se a lista do balanço de branco tiver o valor 9 **e** ele estiver selecionado (a T3 não lista o 9, então aparece desabilitado) |
+| Picture Style | `0xD110` | use só o byte baixo: `0x81` Padrão, `0x82` Retrato, `0x83` Paisagem, `0x84` Neutro, `0x85` Fiel, `0x86` Monocromático, `0x87` Automático, `0x88` Detalhe fino, `0x21`–`0x23` Definido pelo usuário 1–3 |
+| Auto Lighting Optimizer | `0xD1C1` | 0 Padrão, 1 Baixa, 2 Forte, 3 Desativada. Mostrar só se a câmera informar um valor < `0x100`; pode ser recusado conforme o modo |
+
+Nomes desconhecidos aparecem em hexadecimal (`0x4B`), sem esconder o valor.
+
+### Parâmetros do Picture Style (decifrados na própria câmera; o libgphoto2 não trata)
+
+Cada estilo tem a sua propriedade de parâmetros: `0x81`→`0xD150`, `0x82`→`0xD151`, `0x83`→`0xD152`,
+`0x84`→`0xD153`, `0x85`→`0xD154`, `0x86`→`0xD155`, `0x21`→`0xD160`, `0x22`→`0xD161`, `0x23`→`0xD162`.
+
+O valor (os bytes crus do `PropValueChanged`, a partir do offset 12) é uma lista de palavras `u32`. Ele tem
+**28 bytes** nos estilos de fábrica, com os parâmetros a partir da palavra **1**, e **32 bytes** nos estilos do
+usuário (há uma palavra a mais com o estilo base), com os parâmetros a partir da palavra **2**. A partir daí,
+as palavras são, nesta ordem e como inteiros com sinal:
+
+| Parâmetro | Faixa |
+|---|---|
+| Contraste | −4..+4 |
+| Nitidez | 0..7 |
+| Saturação | −4..+4 |
+| Tom de cor | −4..+4 |
+
+Para mudar um parâmetro: pegue a propriedade de parâmetros do estilo **atual**, copie **todas** as palavras do
+cache, troque só a palavra do parâmetro e escreva a lista inteira de volta com `SetDevicePropValueEx`. Se o
+estilo atual não tiver parâmetros conhecidos ou o cache tiver menos de 28 bytes, deixe os quatro controles
+desabilitados.
+
+## Canal de controle (serviço ↔ painel)
+
+Socket Unix em `$XDG_RUNTIME_DIR/eoscam.sock`, com permissão só para o usuário. Use um protocolo de texto
+simples, uma mensagem por linha (ex.: JSON por linha), para dar para testar com `socat`. Ele precisa cobrir:
+
+- **estado**: câmera conectada ou não, nome dela, estado (ocioso / ligando / ao vivo / sem câmera), quadros/s
+  de entrada e de saída, se o Chrome está consumindo;
+- **ajustes de imagem**: ler e alterar (o serviço aplica no próximo quadro e grava no `settings.ini`);
+- **ajustes da câmera**: o cache inteiro (valor, lista permitida e bytes crus por propriedade) com o número de
+  geração, avisos quando ele muda, e pedidos de escrita (que entram na fila da thread de captura e devolvem
+  "aceito" ou "a câmera recusou");
+- **prévia**: com o painel inscrito, o serviço envia o quadro **final** (depois dos ajustes, o mesmo que o
+  Chrome recebe), reduzido para ~640×360, a no máximo 15 fps. Por exemplo, em JPEG recomprimido com a TurboJPEG
+  (barato e pequeno). Pare de enviar quando o painel sair;
+- **painel aberto**: enquanto houver um painel conectado, ele conta como consumidor para o Live View sob
+  demanda.
+
+Se o painel não ler a tempo, o serviço descarta quadros da prévia: o painel nunca pode atrasar a webcam.
+
+## Painel de ajustes (`eoscam-panel`, GTK4)
+
+Uma janela normal (o Hyprland a gerencia como qualquer outra), com uma entrada `.desktop` ("Ajustes da webcam
+Canon") para abrir pelo lançador do Omarchy. Uma segunda instância só traz a primeira para a frente. Tudo em
+português.
+
+Layout, como no Windows:
+
+- **Prévia** à esquerda, ao vivo, com a proporção 16:9 preservada e zoom (Ajustar / 100 % / 200 % / 300 %, roda
+  do mouse para zoom, arrastar para mover, duplo clique para ajustar). É para conferir foco e nitidez.
+- **Imagem**: os seis controles deslizantes, com o valor ao lado (gamma com duas casas, saturação em %), e o
+  botão "Restaurar padrões". A imagem muda enquanto o usuário arrasta.
+- **Câmera (ajustes guardados pela própria câmera)**: uma linha de informação ("Canon EOS 1100D (só os ajustes
+  que o modo atual permite)" ou "Câmera desconectada ou desligada: ajustes indisponíveis."); listas para
+  compensação de exposição, ISO, balanço de branco, Picture Style e Auto Lighting Optimizer, preenchidas com a
+  **lista anunciada pela câmera**; controles deslizantes para temperatura de cor e para os quatro parâmetros do
+  Picture Style. Os deslizantes da câmera **só enviam ao soltar** (cada escrita é uma operação USB). Controles
+  que o modo atual não anuncia ficam desabilitados ("n/d"). O painel se atualiza sozinho quando a geração do
+  cache muda (inclusive se o usuário mexer na roda de modos da câmera).
+- **Barra de estado**: estado da câmera, quadros/s e se a webcam está em uso.
+- Um grupo "Efeitos de IA (NVIDIA Maxine)" **não** entra agora (ver "Futuro"), mas deixe espaço no layout para
+  ele.
+
+Se o serviço não estiver rodando, o painel mostra isso e tenta reconectar sozinho, sem travar.
+
+**Testes do painel sem entrada sintética:** a lógica (montar as listas, nomes, codificações, Picture Style)
+fica fora dos widgets e pode ser testada pelo canal de controle e pelos subcomandos. Para conferir o visual,
+se possível, faça o painel renderizar a si mesmo num PNG sem mostrar a janela (ex.: `eoscam-panel
+--snapshot arquivo.png`, usando `gtk_widget_snapshot` e o renderizador do GSK); se não der, peça ao usuário para
+abrir o painel e olhar. Nunca simule cliques ou teclas.
+
 ## Permissões, udev e conflitos
 
 - Arquivo `/etc/udev/rules.d/70-eoscam.rules`, em `/etc` para nenhuma atualização de pacote sobrescrever:
@@ -215,8 +391,9 @@ ao usuário para fazer esse teste final no navegador, sem automatizar cliques.
   Omarchy (`~/.config/hypr`, etc.), para as atualizações dele não interferirem.
 - O serviço fica **sempre rodando** (barato sem consumidor) e o nó do PipeWire existe sempre, então a câmera
   aparece no Chrome mesmo antes de a Canon ser ligada.
-- Configuração em `~/.config/eoscam/config.ini` (posição do recorte, formato, nível de log), lida na inicialização
-  e com SIGHUP.
+- Configuração em `~/.config/eoscam/settings.ini`: seção `[image]` (ajustes de imagem, ver acima) e seção
+  `[linux]` (posição do recorte, formato, nível de log). Edições externas são recarregadas sozinhas.
+- O painel instala `~/.local/bin/eoscam-panel` e `~/.local/share/applications/eoscam-panel.desktop`.
 - Log no journal (stdout/stderr com `systemd`), em português.
 - Um `scripts/install.sh` (no `linux/`) que compila, instala o binário, a unit e a regra do udev (esta última com
   `sudo`, avisando o usuário antes) e roda `udevadm control --reload` + `systemctl --user enable --now eoscam`.
@@ -228,7 +405,13 @@ ao usuário para fazer esse teste final no navegador, sem automatizar cliques.
 - `eoscam bench [segundos]`: captura e processa sem PipeWire e mede quadros/s de captura, tempo de
   processamento e CPU.
 - `eoscam run`: o serviço em primeiro plano (o que a unit do systemd executa).
-- `eoscam process in.jpg out.yuv`: roda o pipeline sobre um JPEG, sem câmera.
+- `eoscam process in.jpg out.yuv`: roda o pipeline sobre um JPEG, sem câmera, com os ajustes de imagem do
+  `settings.ini`.
+- `eoscam cam`: com o serviço parado, conecta e lista todas as propriedades da câmera conhecidas (código, nome,
+  valor atual, lista permitida e bytes crus), como o `eoscam cam` do Windows.
+- `eoscam get` / `eoscam set <propriedade> <valor>`: falam com o serviço em execução pelo socket (ex.:
+  `eoscam set image.brightness 20`, `eoscam set cam.wb 1`, `eoscam set cam.style.sharpness 5`). Servem para
+  testar os ajustes sem o painel.
 
 ## Etapas e critérios de aceite
 
@@ -242,10 +425,19 @@ ao usuário para fazer esse teste final no navegador, sem automatizar cliques.
    (ex.: `gst-launch-1.0 pipewiresrc target-object=eoscam ! fakesink`, se o GStreamer estiver instalado) recebe
    quadros a ~30 fps. Sem consumidor, o Live View desliga em ~5 s e a CPU do processo fica ≈ 0.
 5. **Chrome/Meet:** "Canon EOS (eoscam)" aparece no Meet e a imagem fica fluida (teste feito pelo usuário).
-6. **Robustez:** o serviço sobe sozinho no login, sobrevive a `pacman -Syu` com troca de kernel (não há nada
+6. **Ajustes de imagem:** `eoscam process` com valores conhecidos no `settings.ini` dá o resultado esperado
+   (compare pixels com as fórmulas). Editar o arquivo com o serviço rodando muda a imagem em menos de 1 s, e
+   `eoscam set image.*` grava no arquivo. Medir o custo: com ajustes ligados, a captura continua ≥ 28 fps.
+7. **Ajustes da câmera:** `eoscam cam` lista as propriedades da tabela. Pelo `eoscam set`, mudar balanço de
+   branco, compensação de exposição, Picture Style e um parâmetro dele muda a imagem e é confirmado pelo
+   `PropValueChanged`. Um valor recusado volta a mensagem "a câmera recusou", sem derrubar a captura.
+8. **Painel:** prévia ao vivo com zoom, os seis ajustes de imagem e os ajustes da câmera habilitados conforme o
+   modo. Abrir o painel sem nenhuma chamada liga o Live View; fechar desliga em ~5 s. O painel aberto não reduz
+   os quadros/s da webcam. O teste final de uso é feito pelo usuário.
+9. **Robustez:** o serviço sobe sozinho no login, sobrevive a `pacman -Syu` com troca de kernel (não há nada
    compilado contra o kernel) e se recupera de reinício do PipeWire (`systemctl --user restart pipewire`).
-7. **README** em `linux/README.md`: instalação, flag do Chrome, configuração, como diagnosticar (`probe`, journal),
-   e como remover.
+10. **README** em `linux/README.md`: instalação, flag do Chrome, painel, configuração, como diagnosticar
+    (`probe`, `cam`, journal) e como remover.
 
 ## Futuro: Maxine (não fazer agora)
 
@@ -255,5 +447,8 @@ Por isso:
 
 - deixe a etapa de efeitos como uma interface no pipeline (recebe e devolve uma imagem RGB/BGR do recorte, antes
   da escala), hoje sem nenhuma implementação;
+- no painel, o grupo "Efeitos de IA (NVIDIA Maxine)" e o "Fundo virtual" entram junto com os efeitos. As chaves
+  do `settings.ini` serão as mesmas do Windows (seções `[effects]` e `[background]`), então hoje o serviço
+  apenas preserva essas seções ao gravar o arquivo;
 - não linke nada contra CUDA. Na versão para Windows o runtime é carregado dinamicamente (`dlopen` no Linux) e,
   se faltar, os efeitos ficam indisponíveis sem derrubar o pipeline. Mantenha esse padrão quando chegar a hora.

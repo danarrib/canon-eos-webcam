@@ -200,6 +200,10 @@ Gerenciador de Dispositivos ou desinstalar o EOS Webcam Utility.
 
 ## Licenças
 
-O código do eoscam é do projeto. `third_party/maxine` contém cabeçalhos e proxies do NVIDIA Maxine
+O código do eoscam é distribuído sob a licença MIT (veja `LICENSE`). `third_party/maxine` contém cabeçalhos e proxies do NVIDIA Maxine
 Video Effects SDK (MIT, `third_party/maxine/LICENSE`); o runtime e os modelos do Maxine são
 instalados à parte, pelo instalador da NVIDIA, sob a licença deles.
+
+O eoscam é um projeto independente, sem nenhuma ligação com a Canon ou a NVIDIA nem endosso delas.
+Canon, EOS, NVIDIA e Maxine são marcas dos seus respectivos donos e aparecem aqui só para indicar
+compatibilidade.

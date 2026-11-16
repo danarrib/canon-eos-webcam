@@ -2,43 +2,103 @@
 
 Usa uma Canon EOS antiga (testado com a **EOS Rebel T3 / 1100D**) como webcam, sem os
 drivers da Canon: só o driver PTP/WPD padrão do Windows e a API de câmera virtual do
-Windows 11 (`MFCreateVirtualCamera`).
+Windows 11 (`MFCreateVirtualCamera`). A versão 2 processa a imagem na GPU com o
+**NVIDIA Maxine** e traz um painel de controle com ícone na bandeja.
 
-| | EOS Webcam Utility | eoscam |
+| | EOS Webcam Utility | eoscam v2 |
 |---|---|---|
-| Resolução | ~480×360 | 1280×720 (recorte 16:9 do Live View de 1056×704) |
+| Resolução | ~480×360 | **1920×1080** (recorte 16:9 do Live View de 1056×704, com Super Resolution opcional) |
 | Quadros/s | — | ~28 (o Live View da T3 entrega ~29) |
-| CPU (sistema todo, 32 threads) | alta | ~3% |
-| Live View | sempre ligado | liga só quando algum programa usa a webcam |
+| CPU da ponte, sem efeitos de IA | alta | ~19% de um núcleo |
+| Efeitos | — | Super Resolution, redução de artefatos, redução de ruído, remoção/troca de fundo, ajustes de imagem |
+| Ajustes da câmera | — | exposição, ISO, balanço de branco, Picture Style, ALO (pelo painel, via PTP) |
+| Live View | sempre ligado | liga só quando algum programa usa a webcam (ou o painel está aberto) |
 
 ## Como funciona
 
 ```
-Canon T3 ──USB/PTP (driver WPD do Windows)──> eoscam-bg.exe / eoscam run      (sessão do usuário)
-                                                  │ JPEG 1056×704
-                                                  ▼
-                                memória compartilhada Global\EosCamFrames1
-                                                  │
-                                                  ▼
+Canon T3 ──USB/PTP (driver WPD)──> eoscam-bg.exe / eoscam run          (sessão do usuário)
+                                    thread de captura: PTP, Live View, ajustes da câmera
+                                       │ JPEG 1056×704 (sempre o mais recente)
+                                    thread de processamento:
+                                       JPEG → WIC → recorte 16:9 pela base (1056×594)
+                                       → [Denoise] → [Artifact Reduction]       GPU (Maxine)
+                                       → [Green Screen: máscara]                GPU (Maxine)
+                                       → [Super Resolution 2×]                  GPU (Maxine)
+                                       → ajustes + fundo + NV12 1920×1080       CPU
+                                       │
+                                  memória compartilhada Global\EosCamFrames2
+                                       │  quadros NV12 1920×1080 prontos
+                                       ▼
                          eoscam-source.dll  (carregada pelo Frame Server, LocalService)
-                         decodifica JPEG (WIC) → recorta/escala → NV12 1280×720 etc.
-                                                  │
-                                                  ▼
+                         só copia o quadro; desenha as telas de aviso
+                                       │
+                                       ▼
                  câmera virtual "Canon EOS Webcam (eoscam)"  →  Teams, Zoom, navegador, OBS...
 ```
 
 - **`eoscam-source.dll`**: fonte de mídia (IMFMediaSource) registrada em HKLM. O Frame
   Server a carrega quando um programa abre a webcam. Ela sinaliza no canal compartilhado
-  que quer quadros; sem quadros, mostra uma tela explicando o que falta.
-- **`eoscam.exe` / `eoscam-bg.exe`**: a ponte com a câmera. Liga o Live View
-  (`SetRemoteMode`, `EVFOutputDevice = PC`) quando a fonte pede quadros, busca os quadros com
-  `GetViewFinderData` e desliga o Live View 5 s depois que ninguém mais usa a webcam. Se outro
-  software derrubar o Live View, religa automaticamente.
+  que quer quadros; sem quadros, mostra uma tela explicando o que falta. Fica enxuta de
+  propósito: não decodifica nada e **não carrega Maxine nem CUDA** dentro do Frame Server.
+  Se a ponte for de outra versão (quadro de tamanho diferente), mostra "Versões
+  incompatíveis do eoscam: reinstale". O canal v2 (`EosCamFrames2`) não se mistura com o da v1.
+- **`eoscam.exe` / `eoscam-bg.exe`**: a ponte com a câmera e o pipeline de imagem. Liga o
+  Live View (`SetRemoteMode`, `EVFOutputDevice = PC`) quando a fonte pede quadros (ou o painel
+  está aberto), busca os quadros com `GetViewFinderData` e desliga o Live View 5 s depois que
+  ninguém mais usa a webcam. Se outro software derrubar o Live View, religa automaticamente.
+  O `eoscam-bg.exe` é o mesmo código sem console, com **ícone na bandeja e painel**.
 - **`tools/eosprobe`**: ferramenta de medição do Live View via PTP.
 
-Formato oferecido: só NV12 1280×720 a 30 fps, recorte 16:9 ancorado na base (descarta o topo).
+Formato oferecido: só NV12 1920×1080 a 30 fps, recorte 16:9 ancorado na base (descarta o topo).
 Com várias opções, alguns programas abriam primeiro em 640×480 (4:3) e trocavam para 16:9 um
 segundo depois.
+
+## Efeitos de IA (NVIDIA Maxine)
+
+Precisam do **runtime do NVIDIA Video Effects** (instalador do Maxine VFX SDK, "End-user
+Redistributables") em `C:\Program Files\NVIDIA Corporation\NVIDIA Video Effects` (ou na pasta da
+variável `NV_VIDEO_EFFECTS_PATH`) e de uma GPU RTX; os modelos são específicos de cada arquitetura
+(`SR_2x_*`, `AR-*`, `Denoise-*`, `AIGS_*` em `models\`). Nada é compilado contra o CUDA Toolkit: o
+projeto só usa a API do SDK (`NvVFX_*`, `NvCVImage_*`), carregada dinamicamente
+(`third_party/maxine`, licença MIT).
+
+| Efeito | Modos | Observação |
+|---|---|---|
+| Super Resolution 2× | desligado / conservador / agressivo | 1056×594 → 2112×1188, depois reduz para 1920×1080. Desligado: aumento bilinear |
+| Redução de artefatos | desligado / conservador / agressivo | na resolução de origem |
+| Redução de ruído | desligado / conservador / agressivo | temporal (mantém estado); o SDK só aceita largura e altura múltiplas de 8, então roda nas 592 linhas de baixo |
+| Remover o fundo (Green Screen) | ligado/desligado | máscara na resolução de origem, suavizada e ampliada na composição |
+| Fundo | cor sólida, desfoque (0–100), imagem PNG/JPG | o desfoque usa o `BackgroundBlur` do SDK com a máscara; a imagem preenche 1920×1080 ("cover") |
+
+Trocar de modo recria só o efeito afetado, "a quente": o quadro continua usando o modelo antigo
+enquanto o novo carrega (centenas de ms). Ao abrir a webcam os efeitos ativos já são pré-carregados.
+Sem o runtime (ou se a GPU falhar) os efeitos ficam indisponíveis (o painel mostra o motivo) e o
+pipeline segue só na CPU: decodifica, recorta, escala, ajusta, converte.
+
+**Ajustes de imagem** (sobre a imagem da câmera, antes do fundo): brilho, contraste, gamma,
+temperatura (ganhos R/B), tom (verde/magenta) e saturação, aplicados por LUT.
+
+## Painel de controle
+
+Ícone na bandeja (menu: **Abrir painel**, **Iniciar com o Windows**, **Sair**; duplo clique abre o
+painel) ou `eoscam panel`. Com o painel aberto a ponte liga o Live View mesmo sem programa usando a
+webcam, para dar para ajustar antes de uma chamada; ao fechar a janela (a ponte continua na
+bandeja) volta à regra normal. Tem prévia ao vivo, grupos de **Imagem** (duplo clique num controle
+zera), **Efeitos de IA**, **Fundo** e **Câmera**, e um rodapé com o estado da ponte, quadros/s de
+entrada e saída e o tempo de processamento por quadro. As configurações ficam em
+`%APPDATA%\EosCam\settings.ini` (seções `[image]`, `[effects]`, `[background]`, `[ui]`) e são
+gravadas ~0,5 s depois de cada mudança.
+
+**Câmera (PTP, os valores ficam guardados pela própria câmera, não pelo eoscam).** A lista de valores
+vem da câmera (`GetEvent`: `PropValueChanged` e `AvailListChanged`); só aparecem habilitados os ajustes
+que o modo atual da câmera anuncia. Na T3 em modo automático: compensação de exposição, balanço de
+branco (automático, luz do dia, sombra, nublado, tungstênio, fluorescente, flash, personalizado),
+Picture Style e seus parâmetros (contraste, nitidez, saturação, tom de cor) funcionam; o ISO só
+aparece nos modos P/Tv/Av/M, e o Auto Lighting Optimizer pode ser recusado conforme o modo ("a câmera
+recusou"). A temperatura de cor em Kelvin só é oferecida se a câmera listar o modo de temperatura de
+cor (a T3 não lista). Os parâmetros do Picture Style não têm tratamento no libgphoto2: a estrutura
+(`0xD150`…`0xD155`, estilos do usuário em `0xD160`…) foi decifrada lendo e escrevendo na própria câmera.
 
 ## Compilar
 
@@ -58,24 +118,48 @@ pwsh -ExecutionPolicy Bypass -File scripts\deploy.ps1
 # 2. Como usuário comum:
 & "C:\Program Files\EosCam\eoscam.exe" install          # cria a câmera virtual
 & "C:\Program Files\EosCam\eoscam.exe" autostart on     # ponte em segundo plano, inicia com o Windows
+& "C:\Program Files\EosCam\eoscam.exe" panel            # abre o painel de controle
 ```
 
-A câmera deve estar ligada, num modo de foto (P/Av/Tv/M) e com o Live View habilitado no menu.
+A câmera deve estar ligada, num modo de foto (P/Av/Tv/M, para ter mais ajustes) e com o Live View
+habilitado no menu. Se a webcam for aberta antes de qualquer programa, o canal `Global\` só passa a
+existir quando a DLL é carregada pelo Frame Server; o painel funciona mesmo assim.
 
 ## Comandos
 
 ```
-eoscam run                  ponte neste console (para ver o log ao vivo)
-eoscam start | stop         ponte em segundo plano (eoscam-bg.exe)
-eoscam autostart on|off     iniciar a ponte junto com o Windows
+eoscam run                  ponte neste console (para ver o log ao vivo; sem bandeja nem painel)
+eoscam start | stop         ponte em segundo plano (eoscam-bg.exe, com bandeja e painel)
+eoscam panel                abre o painel (inicia o eoscam-bg se ele não estiver rodando)
+eoscam autostart on|off     iniciar a ponte em segundo plano junto com o Windows
 eoscam install | uninstall  criar/remover a câmera virtual
 eoscam status               estado do canal (quadros, produtor, consumidor)
 eoscam list                 câmeras que o Windows enxerga
-eoscam test [--seconds N] [--size LxA] [--out f.jpg]
+eoscam test [--seconds N] [--size LxA] [--out f.jpg] [--direct]
                             abre a webcam como um app comum e mede quadros/s e CPU
+eoscam process in.jpg [--out f.jpg] [--bench N]
+                            passa um JPEG pelo pipeline (sem câmera): testa efeitos e mede os tempos
+eoscam cam [--set PROP=VALOR]... [--out f.jpg]
+                            diagnóstico (com a ponte parada): lista os ajustes que a câmera anuncia,
+                            escreve propriedades (hexadecimal) e salva um quadro processado de cada vez
 ```
 
-Logs: `C:\ProgramData\EosCam\eoscam.log` (ponte) e `source.log` (fonte, dentro do Frame Server).
+Logs: `C:\ProgramData\EosCam\eoscam.log` (ponte; a cada 60 s grava quadros/s, CPU e o tempo por
+estágio) e `source.log` (fonte, dentro do Frame Server).
+
+## Desempenho (RTX 4080, Live View da T3 a ~29 fps)
+
+Medido com `eoscam test --direct --size 1920x1080` e a câmera real; tempos por quadro em média móvel.
+
+| Configuração | Quadros/s entregues | CPU da ponte | Por estágio (ms) |
+|---|---|---|---|
+| Sem efeitos de IA | 26–28 (limite da câmera) | ~19% de um núcleo | decodificação 2,6 + escala/ajustes/NV12 3,5 (CPU) |
+| Super Resolution + Artifact Reduction | 28 | ~80% | GPU: SR 6,0, AR 1,8, envio 0,2, retorno 0,9; CPU: 2,7 + 4,1 |
+| Tudo ligado (SR, AR, Denoise, fundo com desfoque) | 27,6 | ~165% | GPU: SR 5,7, AR 1,5, DN 1,7, máscara+desfoque 3,3, envio/retorno 1,3; CPU: 3,2 + 12,4 |
+
+Sem efeitos a ponte cabe em menos de 25% de um núcleo (código AVX2 com alternativa em C++ puro).
+Com a IA ligada o CPU sobe porque o SDK espera cada estágio da GPU de forma síncrona (a GPU mede 2–6 ms
+por estágio na primeira medição e fica mais lenta quando está em repouso).
 
 ## Desenvolvimento
 
@@ -85,9 +169,15 @@ Server. Com `EOSCAM_LOCAL=1` no ambiente (no `run` e no `test`), o canal usa o n
 
 ```powershell
 $env:EOSCAM_LOCAL = '1'
-.\build\Release\eoscam.exe run        # em um terminal
+.\build\Release\eoscam.exe run             # em um terminal (pare antes a ponte instalada: eoscam stop)
 .\build\Release\eoscam.exe test --direct   # em outro
 ```
+
+Variáveis de ambiente úteis: `EOSCAM_SETTINGS` (outro `settings.ini`), `EOSCAM_LOG` (log do
+eoscam-bg), `NV_VIDEO_EFFECTS_PATH` (outra pasta do runtime do Maxine; uma pasta vazia simula a
+ausência dele), `EOSCAM_FORCE_CPU_BLUR=1` (usa o desfoque de fundo da CPU), `EOSCAM_THREADS`
+(threads do pool de imagem), `EOSCAM_DUMP_EVENTS=1` (mostra no log os eventos de propriedades da
+câmera).
 
 Para atualizar a DLL instalada, rode `scripts\deploy.ps1` de novo (como admin): ele para o
 Frame Server para liberar o arquivo.
@@ -107,3 +197,9 @@ O driver do EOS Webcam Utility (UMDF, usa o EDSDK) fala com a câmera sempre que
 Server do Windows entra em atividade e derruba o Live View do eoscam. O eoscam se recupera
 sozinho em menos de 1 s, mas o ideal é desativar o dispositivo "EOS Webcam Utility" no
 Gerenciador de Dispositivos ou desinstalar o EOS Webcam Utility.
+
+## Licenças
+
+O código do eoscam é do projeto. `third_party/maxine` contém cabeçalhos e proxies do NVIDIA Maxine
+Video Effects SDK (MIT, `third_party/maxine/LICENSE`); o runtime e os modelos do Maxine são
+instalados à parte, pelo instalador da NVIDIA, sob a licença deles.

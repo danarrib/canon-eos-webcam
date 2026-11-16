@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <shobjidl.h>
+#include <windowsx.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -37,7 +38,7 @@ enum Id : int {
     ID_BG_ENABLE = 130, ID_BG_MODE, ID_BG_COLOR, ID_BG_BLUR, ID_BG_IMAGE, ID_BG_NOTE,
     ID_CAM_EXP = 150, ID_CAM_ISO, ID_CAM_WB, ID_CAM_KELVIN, ID_CAM_STYLE, ID_CAM_CONTRAST, ID_CAM_SHARP,
     ID_CAM_SAT, ID_CAM_TONE, ID_CAM_ALO, ID_CAM_INFO,
-    ID_STATUS = 190,
+    ID_STATUS = 190, ID_ZOOM = 195, ID_ZOOM_HINT = 196,
     ID_VALUE_BASE = 300,  // rótulo de valor de um controle deslizante: ID_VALUE_BASE + id
     ID_LABEL_BASE = 500,  // rótulo de texto de um controle: ID_LABEL_BASE + id
     ID_NOTE_BASE = 700,   // texto de estado ao lado de um controle: ID_NOTE_BASE + id
@@ -194,6 +195,16 @@ struct PanelApp::Impl {
     bool havePreview = false;
     uint64_t previewFrame = 0;
     RECT swatchRc{};
+    // zoom: 0 = Ajustar, 1..3 = 100%/200%/300% (pixels de tela por pixel de vídeo)
+    int zoom = 0;
+    double viewX = 0, viewY = 0;  // canto superior esquerdo da janela de visão, em coordenadas do vídeo
+    bool dragging = false;
+    POINT dragStart{};
+    double dragViewX = 0, dragViewY = 0;
+    int bufW = 0, bufH = 0;
+    std::vector<int> xb, yb;  // limites da caixa de média por coluna/linha de destino (modo Ajustar)
+    int perfCount = 0;
+    double perfSum = 0, perfMax = 0;
 
     // ---- estado dos controles da câmera (para reconstruir só quando muda)
     std::vector<uint32_t> expList, isoList, wbList, styleList, aloList;
@@ -237,7 +248,16 @@ struct PanelApp::Impl {
         // ---- esquerda: prévia (640x360 em x=12,y=12), efeitos de IA e fundo
         previewRc = {S(12), S(12), S(12 + 640), S(12 + 360)};
 
-        int gy = 380;
+        // zoom logo abaixo da prévia
+        Label(ID_ZOOM, L"Zoom:", 12, 378, 44);
+        HWND zc = Combo(ID_ZOOM, 58, 378, 100);
+        for (const wchar_t* n : {L"Ajustar", L"100%", L"200%", L"300%"})
+            SendMessageW(zc, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
+        SendMessageW(zc, CB_SETCURSEL, WPARAM(zoom), 0);
+        Make(L"STATIC", L"Roda do mouse: zoom · arrastar: mover · duplo clique: ajustar", SS_LEFT | SS_NOPREFIX, 168,
+             381, 484, 18, ID_ZOOM_HINT);
+
+        int gy = 380 + 30;
         Group(L"Efeitos de IA (GPU, NVIDIA Maxine)", 12, gy, 640, 104);
         const wchar_t* fxNames[] = {L"Super Resolution 2×", L"Redução de artefatos", L"Redução de ruído"};
         const int fxIds[] = {ID_FX_SR, ID_FX_AR, ID_FX_DN};
@@ -694,44 +714,159 @@ struct PanelApp::Impl {
     void UpdatePreview() {
         bridge.Pipeline().RequestPreview();
         uint64_t fn = 0;
-        std::vector<uint8_t> nv;
-        if (!bridge.Pipeline().GetPreview(nv, fn) || nv.size() < size_t(1920) * 1080 * 3 / 2 || fn == previewFrame) return;
+        if (!bridge.Pipeline().GetPreview(frameNv12, fn) || frameNv12.size() < size_t(1920) * 1080 * 3 / 2 ||
+            fn == previewFrame)
+            return;
         previewFrame = fn;
-        const int pw = 640, ph = 360;
-        previewBgra.resize(size_t(pw) * ph * 4);
-        const uint8_t* yp = nv.data();
-        const uint8_t* uv = nv.data() + size_t(1920) * 1080;
-        for (int y = 0; y < ph; y++) {
-            int sy = y * 3 + 1;
-            for (int x = 0; x < pw; x++) {
-                int sx = x * 3 + 1;
-                int c = yp[size_t(sy) * 1920 + sx] - 16;
-                const uint8_t* u = uv + size_t(sy / 2) * 1920 + (sx & ~1);
-                int d = u[0] - 128, e = u[1] - 128;
-                uint8_t* o = &previewBgra[(size_t(y) * pw + x) * 4];
-                o[0] = Clamp8((298 * c + 516 * d + 128) >> 8);
-                o[1] = Clamp8((298 * c - 100 * d - 208 * e + 128) >> 8);
-                o[2] = Clamp8((298 * c + 409 * e + 128) >> 8);
-                o[3] = 255;
+        havePreview = true;
+        RenderPreview();
+    }
+
+    // Limites [0, n] divididos em w partes iguais (caixas de média do modo Ajustar).
+    static void FillBounds(std::vector<int>& b, int w, int n) {
+        b.resize(size_t(w) + 1);
+        for (int i = 0; i <= w; i++) b[size_t(i)] = int(int64_t(i) * n / w);
+    }
+
+    static void Yuv(uint8_t* o, int y, int u, int v) {
+        int c = y - 16, d = u - 128, e = v - 128;
+        o[0] = Clamp8((298 * c + 516 * d + 128) >> 8);
+        o[1] = Clamp8((298 * c - 100 * d - 208 * e + 128) >> 8);
+        o[2] = Clamp8((298 * c + 409 * e + 128) >> 8);
+        o[3] = 255;
+    }
+
+    // Monta o buffer BGRA exatamente do tamanho da área da prévia (pixels de tela), para ser copiado 1:1.
+    void RenderPreview() {
+        if (!havePreview || frameNv12.size() < size_t(1920) * 1080 * 3 / 2) return;
+        LARGE_INTEGER t0, t1, fq;
+        QueryPerformanceCounter(&t0);
+        const int W = 1920, H = 1080;
+        int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
+        if (w <= 0 || h <= 0) return;
+        if (w != bufW || h != bufH) {  // só realoca quando o tamanho muda
+            bufW = w;
+            bufH = h;
+            previewBgra.resize(size_t(w) * h * 4);
+            FillBounds(xb, w, W);
+            FillBounds(yb, h, H);
+        }
+        const uint8_t* yp = frameNv12.data();
+        const uint8_t* uv = yp + size_t(W) * H;
+        if (zoom == 0) {
+            // média por área (filtro de caixa) em Y e na crominância
+            for (int y = 0; y < h; y++) {
+                int sy0 = yb[size_t(y)], sy1 = std::max(sy0 + 1, yb[size_t(y) + 1]);
+                int cy0 = sy0 >> 1, cy1 = std::min(H / 2, std::max(cy0 + 1, (sy1 + 1) >> 1));
+                uint8_t* o = &previewBgra[size_t(y) * w * 4];
+                for (int x = 0; x < w; x++, o += 4) {
+                    int sx0 = xb[size_t(x)], sx1 = std::max(sx0 + 1, xb[size_t(x) + 1]);
+                    int cx0 = sx0 >> 1, cx1 = std::min(W / 2, std::max(cx0 + 1, (sx1 + 1) >> 1));
+                    unsigned ys = 0;
+                    for (int j = sy0; j < sy1; j++) {
+                        const uint8_t* r = yp + size_t(j) * W;
+                        for (int i = sx0; i < sx1; i++) ys += r[i];
+                    }
+                    unsigned us = 0, vs = 0;
+                    for (int j = cy0; j < cy1; j++) {
+                        const uint8_t* r = uv + size_t(j) * W;
+                        for (int i = cx0; i < cx1; i++) {
+                            us += r[i * 2];
+                            vs += r[i * 2 + 1];
+                        }
+                    }
+                    unsigned ny = unsigned(sy1 - sy0) * unsigned(sx1 - sx0), nc = unsigned(cy1 - cy0) * unsigned(cx1 - cx0);
+                    Yuv(o, int((ys + ny / 2) / ny), int((us + nc / 2) / nc), int((vs + nc / 2) / nc));
+                }
+            }
+        } else {
+            // vizinho mais próximo: pixels nítidos para inspecionar detalhes
+            int ox, oy;
+            ViewOrigin(ox, oy);
+            for (int y = 0; y < h; y++) {
+                int sy = std::min(H - 1, oy + y / zoom);
+                const uint8_t* yr = yp + size_t(sy) * W;
+                const uint8_t* ur = uv + size_t(sy >> 1) * W;
+                uint8_t* o = &previewBgra[size_t(y) * w * 4];
+                for (int x = 0; x < w; x++, o += 4) {
+                    int sx = std::min(W - 1, ox + x / zoom);
+                    Yuv(o, yr[sx], ur[sx & ~1], ur[(sx & ~1) + 1]);
+                }
             }
         }
-        havePreview = true;
         InvalidateRect(panel, &previewRc, FALSE);
+        QueryPerformanceCounter(&t1);
+        QueryPerformanceFrequency(&fq);
+        double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(fq.QuadPart);
+        perfSum += ms;
+        perfMax = std::max(perfMax, ms);
+        if (++perfCount == 60) {  // medição única: custo médio/máximo de 60 atualizações
+            Log("prévia %dx%d (zoom %d): média %.2f ms, máximo %.2f ms por atualização", w, h, zoom, perfSum / 60,
+                perfMax);
+        }
+    }
+
+    // Tamanho da janela de visão (em pixels do vídeo) para o zoom atual.
+    void ViewSize(int& vw, int& vh) const {
+        int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
+        vw = std::min(1920, (w + zoom - 1) / zoom);
+        vh = std::min(1080, (h + zoom - 1) / zoom);
+    }
+
+    // Origem da janela de visão, limitada para nunca sair da imagem.
+    void ViewOrigin(int& ox, int& oy) {
+        int vw, vh;
+        ViewSize(vw, vh);
+        viewX = std::clamp(viewX, 0.0, double(1920 - vw));
+        viewY = std::clamp(viewY, 0.0, double(1080 - vh));
+        ox = int(viewX);
+        oy = int(viewY);
+    }
+
+    // Muda o nível de zoom mantendo fixo o ponto da imagem sob (cx, cy), em coordenadas de cliente.
+    void SetZoom(int level, int cx, int cy) {
+        level = std::clamp(level, 0, 3);
+        if (level != zoom) {
+            int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
+            double px = double(std::clamp(cx - int(previewRc.left), 0, w)), py = double(std::clamp(cy - int(previewRc.top), 0, h));
+            double srcX, srcY;
+            if (zoom == 0) {
+                srcX = px * 1920.0 / w;
+                srcY = py * 1080.0 / h;
+            } else {
+                srcX = viewX + px / zoom;
+                srcY = viewY + py / zoom;
+            }
+            zoom = level;
+            if (zoom > 0) {
+                viewX = srcX - px / zoom;
+                viewY = srcY - py / zoom;
+            }
+            dragging = false;
+            updating = true;
+            SendMessageW(Child(ID_ZOOM), CB_SETCURSEL, WPARAM(zoom), 0);
+            updating = false;
+        }
+        RenderPreview();
+    }
+
+    bool InPreview(int x, int y) const {
+        POINT p{x, y};
+        return PtInRect(&previewRc, p) != 0;
     }
 
     void PaintPreview(HDC dc) {
-        int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
-        if (havePreview) {
+        if (havePreview && bufW > 0) {
             BITMAPINFO bi{};
             bi.bmiHeader.biSize = sizeof bi.bmiHeader;
-            bi.bmiHeader.biWidth = 640;
-            bi.bmiHeader.biHeight = -360;
+            bi.bmiHeader.biWidth = bufW;
+            bi.bmiHeader.biHeight = -bufH;
             bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32;
             bi.bmiHeader.biCompression = BI_RGB;
-            SetStretchBltMode(dc, HALFTONE);
-            StretchDIBits(dc, previewRc.left, previewRc.top, w, h, 0, 0, 640, 360, previewBgra.data(), &bi,
-                          DIB_RGB_COLORS, SRCCOPY);
+            // cópia 1:1 (o buffer já está no tamanho da tela)
+            SetDIBitsToDevice(dc, previewRc.left, previewRc.top, DWORD(bufW), DWORD(bufH), 0, 0, 0, UINT(bufH),
+                              previewBgra.data(), &bi, DIB_RGB_COLORS);
         } else {
             HBRUSH br = CreateSolidBrush(RGB(32, 34, 38));
             FillRect(dc, &previewRc, br);
@@ -791,7 +926,7 @@ struct PanelApp::Impl {
         SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof ncm, &ncm, 0);
         font = CreateFontIndirectW(&ncm.lfMessageFont);
 
-        const int clientW = 12 + 640 + 12 + 440 + 12, clientH = 12 + 360 + 8 + 104 + 8 + 134 + 8 + 22;
+        const int clientW = 12 + 640 + 12 + 440 + 12, clientH = 12 + 360 + 30 + 8 + 104 + 8 + 134 + 8 + 22;
         DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
         RECT rc{0, 0, S(clientW), S(clientH)};
         AdjustWindowRectExForDpi(&rc, style, FALSE, 0, UINT(dpi));
@@ -835,7 +970,12 @@ struct PanelApp::Impl {
                 int id = LOWORD(w), code = HIWORD(w);
                 if (updating) return 0;
                 if (code == CBN_SELCHANGE) {
-                    if (id == ID_FX_SR || id == ID_FX_AR || id == ID_FX_DN) OnFxCombo(id);
+                    if (id == ID_ZOOM) {
+                        int w0 = previewRc.right - previewRc.left, h0 = previewRc.bottom - previewRc.top;
+                        // zoom pelo combo: mantém o centro da prévia fixo
+                        SetZoom(int(SendMessageW(Child(ID_ZOOM), CB_GETCURSEL, 0, 0)), previewRc.left + w0 / 2,
+                                previewRc.top + h0 / 2);
+                    } else if (id == ID_FX_SR || id == ID_FX_AR || id == ID_FX_DN) OnFxCombo(id);
                     else if (id == ID_BG_MODE) OnBackground(id);
                     else OnCameraCombo(id);
                 } else if (code == BN_CLICKED) {
@@ -861,6 +1001,53 @@ struct PanelApp::Impl {
                     }
                 }
                 return 0;
+            case WM_MOUSEWHEEL: {
+                POINT p{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+                ScreenToClient(h, &p);
+                if (!InPreview(p.x, p.y)) break;
+                int delta = GET_WHEEL_DELTA_WPARAM(w);
+                if (delta != 0) SetZoom(zoom + (delta > 0 ? 1 : -1), p.x, p.y);
+                return 0;
+            }
+            case WM_LBUTTONDOWN: {
+                int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+                if (zoom > 0 && InPreview(x, y)) {
+                    dragging = true;
+                    dragStart = {x, y};
+                    dragViewX = viewX;
+                    dragViewY = viewY;
+                    SetCapture(h);
+                }
+                return 0;
+            }
+            case WM_MOUSEMOVE:
+                if (dragging && zoom > 0) {
+                    viewX = dragViewX - double(GET_X_LPARAM(l) - dragStart.x) / zoom;
+                    viewY = dragViewY - double(GET_Y_LPARAM(l) - dragStart.y) / zoom;
+                    RenderPreview();
+                }
+                return 0;
+            case WM_LBUTTONUP:
+            case WM_CAPTURECHANGED:
+                if (dragging) {
+                    dragging = false;
+                    if (m == WM_LBUTTONUP) ReleaseCapture();
+                }
+                return 0;
+            case WM_LBUTTONDBLCLK:
+                if (InPreview(GET_X_LPARAM(l), GET_Y_LPARAM(l))) SetZoom(0, 0, 0);
+                return 0;
+            case WM_SETCURSOR:
+                if (LOWORD(l) == HTCLIENT && zoom > 0) {
+                    POINT p;
+                    GetCursorPos(&p);
+                    ScreenToClient(h, &p);
+                    if (dragging || InPreview(p.x, p.y)) {
+                        SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                        return TRUE;
+                    }
+                }
+                break;
             case WM_PAINT: {
                 PAINTSTRUCT ps;
                 HDC dc = BeginPaint(h, &ps);
@@ -875,6 +1062,11 @@ struct PanelApp::Impl {
                 return 0;
             case WM_CTLCOLORSTATIC: {
                 HWND c = reinterpret_cast<HWND>(l);
+                if (GetDlgCtrlID(c) == ID_ZOOM_HINT) {
+                    SetTextColor(reinterpret_cast<HDC>(w), RGB(120, 124, 130));
+                    SetBkMode(reinterpret_cast<HDC>(w), TRANSPARENT);
+                    return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+                }
                 if (GetDlgCtrlID(c) == ID_CAM_INFO + 1) {
                     SetTextColor(reinterpret_cast<HDC>(w), RGB(180, 30, 30));
                 }
@@ -1014,6 +1206,7 @@ int PanelApp::Run() {
     wc.lpszClassName = kBridgeWindowClass;
     RegisterClassExW(&wc);
     WNDCLASSEXW pc{sizeof pc};
+    pc.style = CS_DBLCLKS;  // duplo clique na prévia volta ao modo Ajustar
     pc.lpfnWndProc = Impl::PanelProc;
     pc.hInstance = d.inst;
     pc.hCursor = LoadCursorW(nullptr, IDC_ARROW);

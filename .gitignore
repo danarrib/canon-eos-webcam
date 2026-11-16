@@ -1,0 +1,13 @@
+# Saída de compilação
+build/
+tools/eosprobe/build/
+
+# Quadros capturados pelas ferramentas de teste
+eosprobe-out/
+eoscam-test.jpg
+
+# Dependências baixadas (SDKs de terceiros que não versionamos)
+third_party/*/download/
+
+.vs/
+*.user

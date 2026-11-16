@@ -1,7 +1,7 @@
-// Guarda o quadro NV12 que a fonte entrega ao cliente e desenha as telas de aviso (sem quadros,
-// versões incompatíveis etc.). A imagem da câmera já chega pronta da ponte (eoscam.exe), em NV12
-// 1920x1080: esta classe não decodifica nem escala nada, para a DLL continuar leve dentro do
-// Frame Server (que não deve carregar WIC, Maxine nem CUDA).
+// Holds the NV12 frame the source delivers to the client and draws the warning screens (no frames,
+// incompatible versions, etc.). The camera image arrives ready from the bridge (eoscam.exe), as NV12
+// 1920x1080: this class decodes and scales nothing, so the DLL stays light inside the Frame Server
+// (which must not load WIC, Maxine or CUDA).
 #pragma once
 
 #include <windows.h>
@@ -15,9 +15,9 @@ namespace eoscam {
 class FrameRenderer {
 public:
     HRESULT Init(UINT width, UINT height);
-    // Desenha uma tela de aviso (só redesenha se o texto mudou desde a última chamada).
+    // Draws a warning screen (only redraws if the text changed since the last call).
     void RenderMessage(const std::wstring& title, const std::wstring& detail);
-    // Chamar depois de escrever um quadro real em Nv12Data(): a próxima tela de aviso será redesenhada.
+    // Call after writing a real frame into Nv12Data(): the next warning screen will be redrawn.
     void InvalidateMessage() { lastMessage_.clear(); }
 
     const std::vector<uint8_t>& Nv12() const { return nv12_; }

@@ -1,10 +1,13 @@
-// Configurações do usuário (ajustes de imagem, efeitos de IA, fundo virtual e janela do painel),
-// persistidas em %APPDATA%\EosCam\settings.ini (ou no arquivo apontado por EOSCAM_SETTINGS).
+// User settings (image adjustments, AI effects, virtual background and panel window), persisted in
+// %APPDATA%\EosCam\settings.ini (or in the file pointed to by EOSCAM_SETTINGS).
 //
-// Um único objeto compartilhado entre a thread do painel (que altera) e a thread de captura (que
-// consulta uma vez por quadro). Cada alteração incrementa um contador de versão e agenda a gravação
-// em disco com debounce de ~500 ms. Alterações feitas direto no arquivo (por exemplo, à mão) são
-// recarregadas sozinhas, o que facilita testar sem o painel.
+// A single object shared between the panel thread (which changes it) and the processing thread (which
+// reads it once per frame). Each change bumps a version counter and schedules the write to disk with a
+// ~500 ms debounce. Changes made straight to the file (by hand, for instance) are reloaded automatically,
+// which makes testing without the panel easy.
+//
+// The [ui] language key (auto|en|pt) is read only at startup, by InitLang() (i18n.h); this class leaves it
+// untouched in the file.
 #pragma once
 
 #include <windows.h>
@@ -21,13 +24,13 @@ namespace eoscam {
 enum class FxLevel : int { Off = 0, Con = 1, Agg = 2 };
 enum class BgMode : int { Solid = 0, Blur = 1, Image = 2 };
 
-// Ajustes de imagem (aplicados sobre a imagem da câmera, antes da composição com o fundo).
+// Image adjustments (applied to the camera image, before compositing with the background).
 struct ImageSettings {
     int brightness = 0;    // -100..+100
     int contrast = 0;      // -100..+100
-    float gamma = 1.0f;    // 0,5..2,0
-    int temperature = 0;   // -100..+100 (negativo = frio/azulado, positivo = quente/alaranjado)
-    int tint = 0;          // -100..+100 (negativo = verde, positivo = magenta)
+    float gamma = 1.0f;    // 0.5..2.0
+    int temperature = 0;   // -100..+100 (negative = cool/bluish, positive = warm/orange)
+    int tint = 0;          // -100..+100 (negative = green, positive = magenta)
     int saturation = 100;  // 0..200 (%)
 
     bool IsIdentity() const {
@@ -62,7 +65,7 @@ struct BackgroundSettings {
 };
 
 struct UiSettings {
-    int x = -1, y = -1;     // posição da janela do painel (-1 = padrão do Windows)
+    int x = -1, y = -1;     // position of the panel window (-1 = Windows default)
 };
 
 struct Settings {
@@ -79,23 +82,23 @@ public:
     SettingsStore(const SettingsStore&) = delete;
     SettingsStore& operator=(const SettingsStore&) = delete;
 
-    // Caminho do arquivo: EOSCAM_SETTINGS, senão %APPDATA%\EosCam\settings.ini.
+    // File path: EOSCAM_SETTINGS, otherwise %APPDATA%\EosCam\settings.ini.
     static std::wstring DefaultPath();
 
-    // Lê o arquivo (valores ausentes ou inválidos ficam no padrão) e inicia a thread de gravação.
+    // Reads the file (missing or invalid values keep their defaults) and starts the writer thread.
     void Load(const std::wstring& path);
 
-    // Cópia consistente das configurações e do contador de versão.
+    // Consistent copy of the settings and of the version counter.
     Settings Get(uint32_t* version = nullptr) const;
     uint32_t Version() const;
 
-    // Aplica uma alteração (sob o mutex), sobe a versão e agenda a gravação.
+    // Applies a change (under the mutex), bumps the version and schedules the write.
     void Update(const std::function<void(Settings&)>& fn);
 
-    // Recarrega se o arquivo mudou no disco por fora (chamar de vez em quando, ex.: 1x por segundo).
+    // Reloads if the file changed on disk from the outside (call every now and then, e.g. once a second).
     void ReloadIfChangedOnDisk();
 
-    // Grava agora, se houver alteração pendente (usado ao encerrar).
+    // Writes now, if there is a pending change (used when shutting down).
     void FlushNow();
 
     const std::wstring& Path() const { return path_; }

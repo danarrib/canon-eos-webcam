@@ -1,12 +1,12 @@
-# Saída de compilação
+# Build output
 build/
 tools/eosprobe/build/
 
-# Quadros capturados pelas ferramentas de teste
+# Frames captured by the test tools
 eosprobe-out/
 eoscam-test.jpg
 
-# Dependências baixadas (SDKs de terceiros que não versionamos)
+# Downloaded dependencies (third-party SDKs we don't version)
 third_party/*/download/
 
 .vs/

@@ -1,4 +1,4 @@
-// Acesso ao Live View de câmeras Canon EOS via PTP, pelo driver WPD/MTP padrão do Windows.
+// Access to the Live View of Canon EOS cameras over PTP, through the standard Windows WPD/MTP driver.
 #pragma once
 
 #include <windows.h>
@@ -37,8 +37,8 @@ private:
     Microsoft::WRL::ComPtr<IPortableDevice> dev_;
 };
 
-// Códigos de propriedades Canon EOS (PTP). Valores e codificações conferidos no libgphoto2
-// (camlibs/ptp2/ptp.h e config.c), usados só como referência.
+// Canon EOS property codes (PTP). Values and encodings checked against libgphoto2
+// (camlibs/ptp2/ptp.h and config.c), used only as a reference.
 enum : uint32_t {
     kPropISO = 0xD103,
     kPropExpComp = 0xD104,
@@ -48,14 +48,14 @@ enum : uint32_t {
     kPropAlo = 0xD1C1,
 };
 
-// Última leitura de uma propriedade da câmera, alimentada pelos eventos PropValueChanged (0xC189) e
-// AvailListChanged (0xC18A) do GetEvent (0x9116).
+// Last reading of a camera property, fed by the PropValueChanged (0xC189) and AvailListChanged (0xC18A)
+// events of GetEvent (0x9116).
 struct PropState {
     bool hasValue = false;
     uint32_t value = 0;
     bool hasList = false;
-    std::vector<uint32_t> list;  // valores permitidos anunciados pela câmera
-    std::vector<uint8_t> raw;    // bytes do último PropValueChanged (para propriedades estruturadas)
+    std::vector<uint32_t> list;  // allowed values announced by the camera
+    std::vector<uint8_t> raw;    // bytes of the last PropValueChanged (for structured properties)
 };
 
 class CanonCamera {
@@ -64,40 +64,40 @@ public:
 
     ~CanonCamera() { Disconnect(); }
 
-    // Procura a primeira câmera Canon, abre e liga o Live View para o PC.
+    // Finds the first Canon camera, opens it and turns on Live View to the PC. error is English text.
     bool Connect(std::string& error);
-    // Desliga o Live View, sai do modo remoto e fecha o dispositivo.
+    // Turns Live View off, leaves remote mode and closes the device.
     void Disconnect();
     bool IsConnected() const { return connected_; }
     const std::string& Name() const { return name_; }
-    // Diagnóstico: última resposta de GetViewFinderData que não foi um quadro.
+    // Diagnostics: last GetViewFinderData response that was not a frame.
     HRESULT LastHr() const { return lastHr_; }
     DWORD LastCode() const { return lastCode_; }
     size_t LastSize() const { return lastSize_; }
-    // Quantas vezes o Live View teve de ser religado porque a câmera parou de mandar quadros
-    // (acontece quando outro software, como o driver do EOS Webcam Utility, mexe na câmera).
+    // How many times Live View had to be turned back on because the camera stopped sending frames
+    // (happens when other software, such as the EOS Webcam Utility driver, touches the camera).
     int Recoveries() const { return recoveries_; }
 
-    // Busca o quadro mais recente do Live View (JPEG).
+    // Fetches the most recent Live View frame (JPEG).
     Frame GetFrame(std::vector<uint8_t>& jpeg);
 
-    // ---- propriedades da câmera (ajustes do painel)
-    // Intervalo de leitura dos eventos (ms); o painel aberto pede um intervalo menor.
+    // ---- camera properties (panel settings)
+    // Interval between event reads (ms); an open panel asks for a shorter interval.
     void SetEventInterval(DWORD ms) { eventIntervalMs_ = ms; }
-    // Esvazia a fila de eventos da câmera e atualiza o cache. Devolve true se algo mudou.
+    // Drains the camera event queue and updates the cache. Returns true if something changed.
     bool PollEvents();
-    // Cópia do estado de uma propriedade (false se a câmera nunca a anunciou). Thread-safe.
+    // Copy of the state of a property (false if the camera never announced it). Thread-safe.
     bool GetProp(uint32_t prop, PropState& out) const;
-    // Cópia de todas as propriedades conhecidas (diagnóstico: "eoscam cam").
+    // Copy of every known property (diagnostics: "eoscam cam").
     std::map<uint32_t, PropState> AllProps() const {
         std::lock_guard<std::mutex> lk(propsMu_);
         return props_;
     }
-    // Quantas vezes o cache mudou (o painel só redesenha quando muda).
+    // How many times the cache changed (the panel only redraws when it changes).
     uint32_t PropsGeneration() const { return propsGen_; }
-    // Escreve uma propriedade (SetDevicePropValueEx). 0x2001 = aceito; outros = a câmera recusou.
+    // Writes a property (SetDevicePropValueEx). 0x2001 = accepted; anything else = the camera refused.
     PtpResult WriteProp(uint32_t prop, uint32_t value);
-    // Escreve uma propriedade estruturada (lista de palavras de 32 bits).
+    // Writes a structured property (list of 32-bit words).
     PtpResult WritePropWords(uint32_t prop, const std::vector<uint32_t>& words);
 
 private:

@@ -1,7 +1,7 @@
 #include "canon_camera.h"
 
 #include <PortableDevice.h>
-#include <initguid.h>  // instancia as chaves de WpdMtpExtensions.h neste arquivo
+#include <initguid.h>  // instantiates the WpdMtpExtensions.h keys in this file
 #include <WpdMtpExtensions.h>
 
 #include <algorithm>
@@ -72,7 +72,7 @@ void ReadResponse(IPortableDeviceValues* out, PtpResult& r) {
     }
 }
 
-// Separa os blocos de GetViewFinderData ([u32 tamanho][u32 tipo][dados]) e acha o JPEG (tipo 1).
+// Splits the GetViewFinderData blocks ([u32 size][u32 type][data]) and finds the JPEG (type 1).
 bool ExtractJpeg(const std::vector<BYTE>& d, size_t& off, size_t& len) {
     size_t i = 0;
     while (i + 8 <= d.size()) {
@@ -290,7 +290,7 @@ PtpResult CanonCamera::WriteProp(uint32_t prop, uint32_t value) {
         std::lock_guard<std::mutex> lk(propsMu_);
         PropState& p = props_[prop];
         p.hasValue = true;
-        p.value = value;  // otimista: o evento PropValueChanged confirma (ou corrige) em seguida
+        p.value = value;  // optimistic: the PropValueChanged event confirms (or corrects) it right after
         propsGen_++;
     }
     return r;
@@ -315,10 +315,10 @@ bool CanonCamera::GetProp(uint32_t prop, PropState& out) const {
     return it->second.hasValue || it->second.hasList;
 }
 
-// Interpreta o buffer de GetEvent: sequência de registros [u32 tamanho][u32 tipo][dados...], terminada
-// por um registro vazio (tamanho 8, tipo 0). Só os dois tipos de propriedade interessam aqui:
-//   0xC189 PropValueChanged: [8: código da propriedade][12: valor (u32) ou estrutura]
-//   0xC18A AvailListChanged: [8: código][12: tipo de dado][16: quantidade][20: valores, 4 bytes cada]
+// Parses the GetEvent buffer: a sequence of records [u32 size][u32 type][data...], terminated by an empty
+// record (size 8, type 0). Only the two property types matter here:
+//   0xC189 PropValueChanged: [8: property code][12: value (u32) or structure]
+//   0xC18A AvailListChanged: [8: code][12: data type][16: count][20: values, 4 bytes each]
 void CanonCamera::ParseEvents(const std::vector<BYTE>& d) {
     constexpr uint32_t kPropValueChanged = 0xC189, kAvailListChanged = 0xC18A;
     bool changed = false;
@@ -333,7 +333,7 @@ void CanonCamera::ParseEvents(const std::vector<BYTE>& d) {
             for (size_t k = 12; k < n && o + 3 < sizeof hex; k++)
                 o += size_t(snprintf(hex + o, sizeof hex - o, "%02X ", d[i + k]));
             hex[o] = 0;
-            printf("evento %04X prop %04X (%u bytes): %s\n", ty, Rd32(d, i + 8), sz, hex);
+            printf("event %04X prop %04X (%u bytes): %s\n", ty, Rd32(d, i + 8), sz, hex);
             fflush(stdout);
         }
         if (ty == kPropValueChanged && sz >= 16) {
@@ -378,12 +378,12 @@ bool CanonCamera::Connect(std::string& error) {
     auto devs = ListDevices();
     for (auto& d : devs)
         if (ContainsI(d.manufacturer, "canon") || ContainsI(d.name, "eos")) { sel = &d; break; }
-    if (!sel) { error = "nenhuma câmera Canon encontrada (desligada ou desconectada?)"; return false; }
+    if (!sel) { error = "no Canon camera found (turned off or disconnected?)"; return false; }
 
     HRESULT hr = dev_.Open(sel->id);
     if (FAILED(hr)) {
         char b[128];
-        snprintf(b, sizeof b, "falha ao abrir %s (hr=0x%08lX)", sel->name.c_str(), (unsigned long)hr);
+        snprintf(b, sizeof b, "failed to open %s (hr=0x%08lX)", sel->name.c_str(), (unsigned long)hr);
         error = b;
         return false;
     }
@@ -395,7 +395,7 @@ bool CanonCamera::Connect(std::string& error) {
 
     if (!EnableLiveView()) {
         char b[128];
-        snprintf(b, sizeof b, "não consegui ligar o Live View (hr=0x%08lX resp=0x%04lX)", (unsigned long)lastHr_,
+        snprintf(b, sizeof b, "couldn't turn Live View on (hr=0x%08lX resp=0x%04lX)", (unsigned long)lastHr_,
                  (unsigned long)lastCode_);
         error = b;
         dev_.Exec(PTP_OC_CANON_EOS_SetEventMode, {0});
@@ -414,8 +414,8 @@ bool CanonCamera::Connect(std::string& error) {
     return true;
 }
 
-// Modo remoto + Live View com saída para o PC. Idempotente: também serve para religar
-// o Live View quando outro software o desligou.
+// Remote mode + Live View with output to the PC. Idempotent: also turns Live View back on when some other
+// software turned it off.
 bool CanonCamera::EnableLiveView() {
     auto r = dev_.Exec(PTP_OC_CANON_EOS_SetRemoteMode, {1});
     lastHr_ = r.hr;
@@ -423,7 +423,7 @@ bool CanonCamera::EnableLiveView() {
     if (!r.ok()) return false;
     dev_.Exec(PTP_OC_CANON_EOS_SetEventMode, {1});
     {
-        auto ev = dev_.Read(PTP_OC_CANON_EOS_GetEvent);  // o primeiro GetEvent despeja o estado completo
+        auto ev = dev_.Read(PTP_OC_CANON_EOS_GetEvent);  // the first GetEvent dumps the complete state
         if (ev.ok()) ParseEvents(ev.data);
     }
     SetPropEx(PTP_DPC_CANON_EOS_EVFMode, 1);
@@ -447,14 +447,14 @@ void CanonCamera::Disconnect() {
 CanonCamera::Frame CanonCamera::GetFrame(std::vector<uint8_t>& jpeg) {
     if (!connected_) return Frame::Error;
     uint64_t now = GetTickCount64();
-    if (now - lastEventTick_ > eventIntervalMs_) {  // esvazia a fila de eventos da câmera
+    if (now - lastEventTick_ > eventIntervalMs_) {  // drains the camera event queue
         PollEvents();
     }
 
-    // Sem quadros por muito tempo: alguém desligou o Live View (ex.: o driver do EOS Webcam
-    // Utility quando o Frame Server do Windows inicia). Religa; depois de 3 tentativas
-    // seguidas sem sucesso, desiste para o chamador reconectar do zero.
-    // (o primeiro quadro leva ~1,2 s depois de ligar o Live View, daí a folga inicial)
+    // No frames for too long: someone turned Live View off (e.g. the EOS Webcam Utility driver when the
+    // Windows Frame Server starts). Turn it back on; after 3 attempts in a row without success, give up so
+    // the caller reconnects from scratch.
+    // (the first frame takes ~1.2 s after Live View is turned on, hence the initial grace period)
     if (now - connectTick_ > 2500 && now - lastOkTick_ > 800 && now - lastRecoveryTick_ > 1000) {
         if (recoveriesSinceOk_ >= 3) return Frame::Error;
         lastRecoveryTick_ = now;

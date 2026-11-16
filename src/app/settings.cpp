@@ -47,6 +47,7 @@ FxLevel ParseLevel(const std::wstring& v, FxLevel def) {
 }
 const wchar_t* LevelName(FxLevel l) { return l == FxLevel::Con ? L"con" : l == FxLevel::Agg ? L"agg" : L"off"; }
 
+// Also accepts the Portuguese names (cor, desfoque, imagem) that older versions documented.
 BgMode ParseBgMode(const std::wstring& v, BgMode def) {
     if (_wcsicmp(v.c_str(), L"solid") == 0 || _wcsicmp(v.c_str(), L"cor") == 0) return BgMode::Solid;
     if (_wcsicmp(v.c_str(), L"blur") == 0 || _wcsicmp(v.c_str(), L"desfoque") == 0) return BgMode::Blur;
@@ -170,7 +171,7 @@ void SettingsStore::ReloadIfChangedOnDisk() {
     if (path_.empty()) return;
     {
         std::lock_guard<std::mutex> lk(wmu_);
-        if (dirty_) return;  // há gravação nossa pendente: não sobrescreve
+        if (dirty_) return;  // we have a pending write of our own: don't overwrite it
     }
     std::lock_guard<std::mutex> lk(mu_);
     uint64_t st = FileStamp();
@@ -185,7 +186,7 @@ void SettingsStore::ReloadIfChangedOnDisk() {
 
 void SettingsStore::SaveLocked(const Settings& s) {
     const wchar_t* p = path_.c_str();
-    // Garante a pasta e um arquivo UTF-16 (com BOM), para os caminhos com acentos sobreviverem.
+    // Ensures the folder and a UTF-16 file (with BOM), so paths with accented characters survive.
     size_t slash = path_.find_last_of(L"\\/");
     if (slash != std::wstring::npos) {
         std::wstring dir = path_.substr(0, slash);
@@ -249,7 +250,7 @@ void SettingsStore::WriterLoop() {
             wcv_.wait(lk);
             continue;
         }
-        // debounce: espera ~500 ms sem novas alterações
+        // debounce: waits for ~500 ms without new changes
         uint64_t now = GetTickCount64();
         if (now - dirtySince_ < 500) {
             wcv_.wait_for(lk, std::chrono::milliseconds(500 - (now - dirtySince_) + 5));

@@ -1,16 +1,16 @@
-// Encapsulamento do NVIDIA Maxine Video Effects SDK (runtime 0.7.x) carregado dinamicamente.
+// Wrapper for the NVIDIA Maxine Video Effects SDK (runtime 0.7.x), loaded dynamically.
 //
-// Só usa a API do SDK (NvVFX_* e NvCVImage_*): não depende do CUDA Toolkit nem do nvcc.
-// Todas as imagens ficam na GPU; as conversões CPU<->GPU e de formato (u8<->f32, chunky<->planar)
-// são feitas por NvCVImage_Transfer.
+// Uses only the SDK API (NvVFX_* and NvCVImage_*): no dependency on the CUDA Toolkit or nvcc.
+// All images live on the GPU; CPU<->GPU and format conversions (u8<->f32, chunky<->planar) are done by
+// NvCVImage_Transfer.
 //
-// Convenções de modo (confirmadas nos headers e na documentação do SDK):
-//   - Artifact Reduction e Super Resolution: NVVFX_MODE 0 = "con" (conservador),
-//     1 = "agg" (agressivo); são os sufixos dos modelos AR-con/agg e SR_2x_con/agg.
-//   - Denoise: NVVFX_STRENGTH 0 = fraco ("con"), 1 = forte ("agg").
-//   - Green Screen: NVVFX_MODE 0 = qualidade (usado aqui).
-//   - Denoise: largura e altura da imagem precisam ser múltiplas de 8 (senão a saída vem preta).
-//   - Super Resolution 2x: entrada de 90p a 2160p; Artifact Reduction: de 90p a 1080p.
+// Mode conventions (confirmed in the SDK headers and documentation):
+//   - Artifact Reduction and Super Resolution: NVVFX_MODE 0 = "con" (conservative),
+//     1 = "agg" (aggressive); these are the suffixes of the AR-con/agg and SR_2x_con/agg models.
+//   - Denoise: NVVFX_STRENGTH 0 = weak ("con"), 1 = strong ("agg").
+//   - Green Screen: NVVFX_MODE 0 = quality (used here).
+//   - Denoise: the image width and height must be multiples of 8 (otherwise the output is black).
+//   - Super Resolution 2x: input from 90p to 2160p; Artifact Reduction: from 90p to 1080p.
 #pragma once
 
 #include <windows.h>
@@ -18,28 +18,29 @@
 #include <memory>
 #include <string>
 
+#include "i18n.h"
 #include "nvVideoEffects.h"
 
 namespace eoscam {
 
-// Estado global do runtime: localizado uma única vez, no primeiro Init().
+// Global state of the runtime: located only once, on the first Init().
 class MaxineRuntime {
 public:
-    // Procura o runtime (NV_VIDEO_EFFECTS_PATH ou o caminho padrão em Program Files), carrega a DLL e
-    // cria o stream CUDA. Devolve false (e preenche Reason()) se algo falhar. Idempotente.
+    // Looks for the runtime (NV_VIDEO_EFFECTS_PATH or the default path in Program Files), loads the DLL and
+    // creates the CUDA stream. Returns false (and fills in Reason()) if something fails. Idempotent.
     static bool Init();
     static bool Available();
-    static const std::string& Reason();     // por que está indisponível (em português)
-    static const std::string& Version();    // "0.8.1" etc., se disponível
+    static const Msg& Reason();             // why it is unavailable
+    static const std::string& Version();    // "0.8.1" etc., if available
     static const std::string& ModelDir();
     static CUstream Stream();
 };
 
-// Texto curto para um NvCV_Status (ex.: "NVCV_ERR_MODEL (-10)").
+// Short text for an NvCV_Status (e.g. "NVCV_ERR_MODEL (-10)").
 std::string NvStatusText(NvCV_Status s);
 
-// Efeito que transforma uma imagem BGR f32 planar na GPU: Denoise, Artifact Reduction ou
-// Super Resolution 2x. Cada instância tem seus próprios buffers de entrada e saída.
+// Effect that transforms a planar BGR f32 image on the GPU: Denoise, Artifact Reduction or
+// Super Resolution 2x. Each instance has its own input and output buffers.
 class PixelEffect {
 public:
     enum class Kind { Denoise, ArtifactReduction, SuperRes };
@@ -49,10 +50,10 @@ public:
     PixelEffect& operator=(const PixelEffect&) = delete;
     ~PixelEffect();
 
-    // mode: 0 = conservador, 1 = agressivo. Carrega o modelo (pode levar vários segundos).
+    // mode: 0 = conservative, 1 = aggressive. Loads the model (may take several seconds).
     bool Create(Kind kind, int mode, unsigned w, unsigned h, std::string& err);
     bool Run(std::string& err);
-    // Zera o estado temporal (só o Denoise tem estado).
+    // Resets the temporal state (only Denoise has state).
     void ResetState();
 
     Kind kind() const { return kind_; }
@@ -67,7 +68,7 @@ public:
 private:
     NvVFX_Handle fx_ = nullptr;
     NvVFX_StateObjectHandle state_ = nullptr;     // Denoise via AllocateState
-    NvCVImage stateBuf_;                          // Denoise: estado alocado como imagem GPU (alternativa)
+    NvCVImage stateBuf_;                          // Denoise: state allocated as a GPU image (fallback)
     void* stateArray_[1] = {nullptr};
     NvCVImage in_, out_;
     Kind kind_ = Kind::Denoise;
@@ -76,7 +77,7 @@ private:
     unsigned stateBytes_ = 0;
 };
 
-// AI Green Screen: BGR u8 chunky na GPU -> máscara A u8 (mesma resolução).
+// AI Green Screen: chunky BGR u8 on the GPU -> A u8 mask (same resolution).
 class Segmenter {
 public:
     Segmenter() = default;
@@ -103,7 +104,7 @@ private:
     unsigned w_ = 0, h_ = 0;
 };
 
-// Desfoque de fundo do SDK (BackgroundBlur): imagem BGR u8 + máscara A u8 -> BGR u8.
+// SDK background blur (BackgroundBlur): BGR u8 image + A u8 mask -> BGR u8.
 class BgBlurEffect {
 public:
     BgBlurEffect() = default;

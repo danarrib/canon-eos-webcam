@@ -32,20 +32,18 @@ double NowMs() {
     return double(c.QuadPart) / freq;
 }
 
-// Geometria padrão do Live View da T3 (usada para pré-carregar os efeitos antes do primeiro quadro).
+// Default geometry of the T3 Live View (used to preload the effects before the first frame).
 constexpr unsigned kDefaultSrcW = 1056;
 
 struct FxKey {
-    int level = 0;  // 0 = desligado; 1 = con; 2 = agg
+    int level = 0;  // 0 = off; 1 = con; 2 = agg
     unsigned w = 0, h = 0;
     bool operator==(const FxKey& o) const { return level == o.level && w == o.w && h == o.h; }
 };
 
-const char* LevelText(int level) { return level == 2 ? "agressivo" : "conservador"; }
-
-// Mantém um efeito do Maxine e permite trocá-lo "a quente": o quadro atual continua usando o efeito
-// antigo enquanto o novo é carregado numa thread à parte (NvVFX_Load pode levar segundos).
-// Todas as chamadas, exceto Info(), vêm da thread de processamento.
+// Keeps a Maxine effect and lets it be swapped "hot": the current frame keeps using the old effect
+// while the new one is loaded on a separate thread (NvVFX_Load can take seconds).
+// All calls, except Info(), come from the processing thread.
 template <class T>
 class HotEffect {
 public:
@@ -59,21 +57,24 @@ public:
         Poll(want);
         if (want.level == 0) {
             active_.reset();
-            if (!loading_) SetInfo(FxState::Off, "desligado");
+            if (!loading_) SetInfo(FxState::Off, Msg(Str::FxStateOff));
             return nullptr;
         }
         if (active_ && activeKey_ == want) {
-            SetInfo(FxState::Active, showLevel_ ? std::string("ativo (") + LevelText(want.level) + ")" : std::string("ativo"));
+            Str s = !showLevel_ ? Str::FxStateActive
+                    : want.level == 2 ? Str::FxStateActiveAgg
+                                      : Str::FxStateActiveCon;
+            SetInfo(FxState::Active, Msg(s));
             return active_.get();
         }
         if (!loading_ && !(failedKey_ == want)) Start(want);
-        if (active_ && (activeKey_.w != want.w || activeKey_.h != want.h)) active_.reset();  // não serve mais
+        if (active_ && (activeKey_.w != want.w || activeKey_.h != want.h)) active_.reset();  // no longer fits
         return active_.get();
     }
 
     T* Peek() { return active_.get(); }
 
-    // Descarta o efeito (e espera um carregamento em andamento terminar).
+    // Drops the effect (and waits for a load in progress to finish).
     void Drop() {
         Join();
         active_.reset();
@@ -86,7 +87,7 @@ public:
     }
 
 private:
-    void SetInfo(FxState s, const std::string& t) {
+    void SetInfo(FxState s, const Msg& t) {
         std::lock_guard<std::mutex> lk(mu_);
         info_.state = s;
         info_.text = t;
@@ -109,8 +110,8 @@ private:
             failedKey_ = FxKey{};
         } else if (!ready_) {
             failedKey_ = loadingKey_;
-            SetInfo(FxState::Failed, "falhou: " + err_);
-            Log("%s: falhou ao carregar (%s)", what_, err_.c_str());
+            SetInfo(FxState::Failed, Msg(Str::FxStateFailed, err_));
+            Log("%s: failed to load (%s)", what_, err_.c_str());
         }
         ready_.reset();
     }
@@ -120,12 +121,12 @@ private:
         loading_ = true;
         done_ = false;
         err_.clear();
-        SetInfo(FxState::Loading, active_ ? "carregando o novo modo..." : "carregando o modelo...");
+        SetInfo(FxState::Loading, Msg(active_ ? Str::FxStateLoadingMode : Str::FxStateLoadingModel));
         loader_ = std::thread([this, want] {
             double t = NowMs();
             std::string e;
             std::unique_ptr<T> fx = factory_(want, e);
-            if (fx) Log("%s: carregado em %.0f ms (modo %d, %ux%u)", what_, NowMs() - t, want.level, want.w, want.h);
+            if (fx) Log("%s: loaded in %.0f ms (mode %d, %ux%u)", what_, NowMs() - t, want.level, want.w, want.h);
             ready_ = std::move(fx);
             err_ = e;
             done_ = true;
@@ -156,7 +157,7 @@ struct FramePipeline::Impl {
           ar(MakePixel(PixelEffect::Kind::ArtifactReduction), "Artifact Reduction"),
           sr(MakePixel(PixelEffect::Kind::SuperRes), "Super Resolution"),
           gs(MakeSegmenter(), "Green Screen", false),
-          blur(MakeBlur(), "Desfoque do SDK", false) {}
+          blur(MakeBlur(), "SDK blur", false) {}
 
     static HotEffect<PixelEffect>::Factory MakePixel(PixelEffect::Kind kind) {
         return [kind](const FxKey& k, std::string& err) -> std::unique_ptr<PixelEffect> {
@@ -201,12 +202,12 @@ struct FramePipeline::Impl {
     HotEffect<Segmenter> gs;
     HotEffect<BgBlurEffect> blur;
 
-    // imagens GPU (criadas só se o Maxine existir; NvCVImage usa as DLLs do SDK)
+    // GPU images (created only if Maxine exists; NvCVImage uses the SDK DLLs)
     std::unique_ptr<NvCVImage> gU8, hub, tmp;
     unsigned gW = 0, gH = 0;
     BgBlurEffect* maskZeroedFor = nullptr;
 
-    // buffers CPU
+    // CPU buffers
     unsigned inW = 0, inH = 0;
     std::vector<uint8_t> cpuIn, cpuOut, cpuMask, cpuPlate, tmpMask, plateSmall, plateMask, blurTmp;
     YuvImage bgImage;
@@ -217,7 +218,7 @@ struct FramePipeline::Impl {
     bool lutValid = false;
     std::wstring bgImagePath;
     bool bgImageOk = false;
-    std::string bgNote;
+    Msg bgNote;
 
     uint64_t gpuBackoffUntil = 0;
     int gpuFailures = 0;
@@ -235,10 +236,10 @@ bool FramePipeline::Impl::Init() {
     if (inited) return true;
     inited = true;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
-    if (FAILED(hr)) Log("pipeline: falha ao iniciar o WIC (hr=0x%08lX)", (unsigned long)hr);
-    // Medido (1080p, SR+AR e tudo ligado): o trabalho de CPU de um quadro cabe em ~15-25 ms numa thread só
-    // (< 33 ms), e acordar o pool a cada quadro custa bem mais CPU do que ganha (SR+AR: 21% de um núcleo com
-    // 1 thread contra 30% com 4). Por isso o padrão é 1; EOSCAM_THREADS (1..8) permite trocar latência por CPU.
+    if (FAILED(hr)) Log("pipeline: failed to start WIC (hr=0x%08lX)", (unsigned long)hr);
+    // Measured (1080p, SR+AR and everything on): the CPU work of a frame fits in ~15-25 ms on a single thread
+    // (< 33 ms), and waking the pool on every frame costs far more CPU than it gains (SR+AR: 21% of a core with
+    // 1 thread versus 30% with 4). Hence the default of 1; EOSCAM_THREADS (1..8) trades CPU for latency.
     int threads = 1;
     wchar_t tv[8];
     if (GetEnvironmentVariableW(L"EOSCAM_THREADS", tv, 8) > 0 && tv[0] >= L'1' && tv[0] <= L'8') threads = tv[0] - L'0';
@@ -255,18 +256,18 @@ bool FramePipeline::Impl::Init() {
         stats.maxineVersion = MaxineRuntime::Version();
     }
     if (maxineOk) {
-        Log("pipeline: NVIDIA Maxine %s disponível (modelos em %s)", MaxineRuntime::Version().c_str(),
+        Log("pipeline: NVIDIA Maxine %s available (models in %s)", MaxineRuntime::Version().c_str(),
             MaxineRuntime::ModelDir().c_str());
         gU8 = std::make_unique<NvCVImage>();
         hub = std::make_unique<NvCVImage>();
         tmp = std::make_unique<NvCVImage>();
     } else {
-        Log("pipeline: efeitos de IA indisponíveis (%s); usando só a CPU", MaxineRuntime::Reason().c_str());
+        Log("pipeline: AI effects unavailable (%s); using the CPU only", Text(MaxineRuntime::Reason(), Lang::En).c_str());
     }
     return wic != nullptr;
 }
 
-// Decodifica o JPEG, recortando 16:9 ancorado na base (descarta o topo, que costuma ser parede/teto).
+// Decodes the JPEG, cropping 16:9 anchored at the bottom (drops the top, which is usually wall/ceiling).
 bool FramePipeline::Impl::Decode(const uint8_t* jpeg, size_t n) {
     if (!wic) return false;
     ComPtr<IWICStream> stream;
@@ -307,9 +308,9 @@ void FramePipeline::Impl::UpdateBgImage(const BackgroundSettings& bg) {
     if (bg.imagePath == bgImagePath && (bgImageOk || !bgNote.empty())) return;
     bgImagePath = bg.imagePath;
     bgImageOk = false;
-    bgNote.clear();
+    bgNote = {};
     if (bg.imagePath.empty()) {
-        bgNote = "nenhuma imagem de fundo escolhida";
+        bgNote = Msg(Str::BgNoteNoImage);
         return;
     }
     ComPtr<IWICBitmapDecoder> dec;
@@ -320,22 +321,22 @@ void FramePipeline::Impl::UpdateBgImage(const BackgroundSettings& bg) {
         FAILED(dec->GetFrame(0, &fr)) || FAILED(wic->CreateFormatConverter(&cv)) ||
         FAILED(cv->Initialize(fr.Get(), GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0,
                               WICBitmapPaletteTypeCustom))) {
-        bgNote = "não consegui abrir a imagem de fundo";
-        Log("fundo: não consegui abrir a imagem %S", bg.imagePath.c_str());
+        bgNote = Msg(Str::BgNoteOpenFailed);
+        Log("background: couldn't open the image %S", bg.imagePath.c_str());
         return;
     }
     UINT w = 0, h = 0;
     fr->GetSize(&w, &h);
     std::vector<uint8_t> raw(size_t(w) * h * 3);
     if (FAILED(cv->CopyPixels(nullptr, w * 3, UINT(raw.size()), raw.data()))) {
-        bgNote = "falha ao ler a imagem de fundo";
+        bgNote = Msg(Str::BgNoteReadFailed);
         return;
     }
     std::vector<uint8_t> cover;
     CoverBgr(raw.data(), int(w), int(h), int(w) * 3, kOutW, kOutH, cover);
     BgrToYuv(cover.data(), kOutW, kOutH, kOutW * 3, nullptr, bgImage, *pool);
     bgImageOk = true;
-    Log("fundo: imagem %S carregada (%ux%u)", bg.imagePath.c_str(), w, h);
+    Log("background: image %S loaded (%ux%u)", bg.imagePath.c_str(), w, h);
 }
 
 void FramePipeline::Impl::EnsureGpu(unsigned w, unsigned h) {
@@ -355,7 +356,7 @@ void FramePipeline::Impl::ManageEffects(const Settings& cfg, unsigned w, unsigne
     gsE = nullptr;
     blurE = nullptr;
     if (!maxineOk) return;
-    FxKey kdn{int(cfg.fx.denoise), w & ~7u, h & ~7u};  // o Denoise exige dimensões múltiplas de 8
+    FxKey kdn{int(cfg.fx.denoise), w & ~7u, h & ~7u};  // Denoise requires dimensions that are multiples of 8
     FxKey kar{int(cfg.fx.artifact), w, h};
     FxKey ksr{int(cfg.fx.superRes), w, h};
     FxKey kgs{cfg.bg.greenScreen ? 1 : 0, w, h};
@@ -377,8 +378,8 @@ void FramePipeline::Impl::ManageEffects(const Settings& cfg, unsigned w, unsigne
         }                                                                          \
     } while (0)
 
-// Executa os estágios de GPU. Em caso de sucesso: cpuOut (se algum efeito de pixel rodou), cpuMask (se o
-// Green Screen rodou) e cpuPlate (se o desfoque do SDK rodou) ficam preenchidos.
+// Runs the GPU stages. On success, cpuOut (if a pixel effect ran), cpuMask (if Green Screen ran) and
+// cpuPlate (if the SDK blur ran) are filled in.
 bool FramePipeline::Impl::RunGpu(const Settings& cfg, PixelEffect* dnE, PixelEffect* arE, PixelEffect* srE,
                                  Segmenter* gsE, BgBlurEffect* blurE, bool wantPlate, PipelineStats& st) {
     CUstream stream = MaxineRuntime::Stream();
@@ -388,13 +389,13 @@ bool FramePipeline::Impl::RunGpu(const Settings& cfg, PixelEffect* dnE, PixelEff
     NvCVImage cpuImg;
     NvCVImage_Init(&cpuImg, W, H, int(W) * 3, cpuIn.data(), NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_CPU);
     double t = NowMs();
-    GPU_STEP(NvCVImage_Transfer(&cpuImg, gU8.get(), 1.0f, stream, nullptr), "envio à GPU");
+    GPU_STEP(NvCVImage_Transfer(&cpuImg, gU8.get(), 1.0f, stream, nullptr), "upload to the GPU");
     st.msUpload = NowMs() - t;
 
     double segMs = 0, dlMs = 0;
     if (gsE) {
         t = NowMs();
-        GPU_STEP(NvCVImage_Transfer(gU8.get(), &gsE->In(), 1.0f, stream, nullptr), "Green Screen (entrada)");
+        GPU_STEP(NvCVImage_Transfer(gU8.get(), &gsE->In(), 1.0f, stream, nullptr), "Green Screen (input)");
         std::string e;
         if (!gsE->Run(e)) {
             lastGpuError = "Green Screen: " + e;
@@ -405,18 +406,18 @@ bool FramePipeline::Impl::RunGpu(const Settings& cfg, PixelEffect* dnE, PixelEff
         cpuMask.resize(size_t(W) * H);
         NvCVImage m;
         NvCVImage_Init(&m, W, H, int(W), cpuMask.data(), NVCV_A, NVCV_U8, NVCV_CHUNKY, NVCV_CPU);
-        GPU_STEP(NvCVImage_Transfer(&gsE->Out(), &m, 1.0f, stream, tmp.get()), "Green Screen (máscara)");
+        GPU_STEP(NvCVImage_Transfer(&gsE->Out(), &m, 1.0f, stream, tmp.get()), "Green Screen (mask)");
         dlMs += NowMs() - t;
     }
     if (blurE && wantPlate) {
         t = NowMs();
-        // O desfoque do SDK usa a máscara do Green Screen para desfocar só o fundo; o resultado serve de
-        // "placa" de fundo na composição final (a pessoa vem da imagem nítida, que pode ter Super Resolution).
-        if (gsE) GPU_STEP(NvCVImage_Transfer(&gsE->Out(), &blurE->Mask(), 1.0f, stream, nullptr), "desfoque (máscara)");
-        GPU_STEP(NvCVImage_Transfer(gU8.get(), &blurE->In(), 1.0f, stream, nullptr), "desfoque (entrada)");
+        // The SDK blur uses the Green Screen mask to blur only the background; the result is the background
+        // "plate" of the final compositing (the person comes from the sharp image, which may have Super Resolution).
+        if (gsE) GPU_STEP(NvCVImage_Transfer(&gsE->Out(), &blurE->Mask(), 1.0f, stream, nullptr), "blur (mask)");
+        GPU_STEP(NvCVImage_Transfer(gU8.get(), &blurE->In(), 1.0f, stream, nullptr), "blur (input)");
         std::string e;
         if (!blurE->Run(std::max(0.0f, std::min(1.0f, cfg.bg.blur / 100.0f)), e)) {
-            lastGpuError = "desfoque: " + e;
+            lastGpuError = "blur: " + e;
             return false;
         }
         segMs += NowMs() - t;
@@ -424,46 +425,46 @@ bool FramePipeline::Impl::RunGpu(const Settings& cfg, PixelEffect* dnE, PixelEff
         cpuPlate.resize(size_t(W) * H * 3);
         NvCVImage pl;
         NvCVImage_Init(&pl, W, H, int(W) * 3, cpuPlate.data(), NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_CPU);
-        GPU_STEP(NvCVImage_Transfer(&blurE->Out(), &pl, 1.0f, stream, nullptr), "desfoque (saída)");
+        GPU_STEP(NvCVImage_Transfer(&blurE->Out(), &pl, 1.0f, stream, nullptr), "blur (output)");
         dlMs += NowMs() - t;
     }
 
     st.msDenoise = st.msArtifact = st.msSuperRes = 0;
     if (dnE || arE || srE) {
-        // hub: imagem corrente em BGR f32 planar na resolução de origem
-        GPU_STEP(NvCVImage_Transfer(gU8.get(), hub.get(), 1.0f / 255.0f, stream, nullptr), "conversão para float");
+        // hub: current image in planar BGR f32 at the source resolution
+        GPU_STEP(NvCVImage_Transfer(gU8.get(), hub.get(), 1.0f / 255.0f, stream, nullptr), "conversion to float");
         std::string e;
         if (dnE) {
             t = NowMs();
             unsigned aw = dnE->inW(), ah = dnE->inH();
-            unsigned oy = H - ah;  // alinhado à base (as linhas do topo que sobram ficam sem Denoise)
+            unsigned oy = H - ah;  // aligned to the bottom (the leftover rows at the top get no Denoise)
             NvCVRect2i rect{0, int(oy), int(aw), int(ah)};
             NvCVPoint2i pt{0, int(oy)};
             GPU_STEP(NvCVImage_TransferRect(hub.get(), &rect, &dnE->In(), nullptr, 1.0f, stream, nullptr),
-                     "Denoise (entrada)");
+                     "Denoise (input)");
             if (!dnE->Run(e)) {
                 lastGpuError = "Denoise: " + e;
                 return false;
             }
             GPU_STEP(NvCVImage_TransferRect(&dnE->Out(), nullptr, hub.get(), &pt, 1.0f, stream, nullptr),
-                     "Denoise (saída)");
+                     "Denoise (output)");
             st.msDenoise = NowMs() - t;
         }
         if (arE) {
             t = NowMs();
-            GPU_STEP(NvCVImage_Transfer(hub.get(), &arE->In(), 1.0f, stream, nullptr), "Artifact Reduction (entrada)");
+            GPU_STEP(NvCVImage_Transfer(hub.get(), &arE->In(), 1.0f, stream, nullptr), "Artifact Reduction (input)");
             if (!arE->Run(e)) {
                 lastGpuError = "Artifact Reduction: " + e;
                 return false;
             }
-            GPU_STEP(NvCVImage_Transfer(&arE->Out(), hub.get(), 1.0f, stream, nullptr), "Artifact Reduction (saída)");
+            GPU_STEP(NvCVImage_Transfer(&arE->Out(), hub.get(), 1.0f, stream, nullptr), "Artifact Reduction (output)");
             st.msArtifact = NowMs() - t;
         }
         NvCVImage* result = hub.get();
         unsigned rw = W, rh = H;
         if (srE) {
             t = NowMs();
-            GPU_STEP(NvCVImage_Transfer(hub.get(), &srE->In(), 1.0f, stream, nullptr), "Super Resolution (entrada)");
+            GPU_STEP(NvCVImage_Transfer(hub.get(), &srE->In(), 1.0f, stream, nullptr), "Super Resolution (input)");
             if (!srE->Run(e)) {
                 lastGpuError = "Super Resolution: " + e;
                 return false;
@@ -479,7 +480,7 @@ bool FramePipeline::Impl::RunGpu(const Settings& cfg, PixelEffect* dnE, PixelEff
         cpuOut.resize(size_t(rw) * rh * 3);
         NvCVImage o;
         NvCVImage_Init(&o, rw, rh, int(rw) * 3, cpuOut.data(), NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_CPU);
-        GPU_STEP(NvCVImage_Transfer(result, &o, 255.0f, stream, tmp.get()), "retorno da imagem");
+        GPU_STEP(NvCVImage_Transfer(result, &o, 255.0f, stream, tmp.get()), "image download");
         dlMs += NowMs() - t;
     }
     st.msSegment = segMs;
@@ -509,14 +510,14 @@ void FramePipeline::Prewarm() {
     Segmenter* g;
     BgBlurEffect* bl;
     unsigned w = s.inW ? s.inW : kDefaultSrcW;
-    unsigned h = s.inH ? s.inH : ((kDefaultSrcW * 9 / 16) & ~1u);  // recorte 16:9 do Live View (594)
+    unsigned h = s.inH ? s.inH : ((kDefaultSrcW * 9 / 16) & ~1u);  // 16:9 crop of the Live View (594)
     s.ManageEffects(cfg, w, h, a, b, c, g, bl);
     s.PublishStatus(cfg);
 }
 
 void FramePipeline::StreamRestarted() {
     Impl& s = *d_;
-    // Chamada pela thread de processamento (única dona dos efeitos).
+    // Called by the processing thread (the only owner of the effects).
     if (PixelEffect* e = s.dn.Peek()) e->ResetState();
     if (Segmenter* g = s.gs.Peek()) g->ResetState();
 }
@@ -526,7 +527,7 @@ void FramePipeline::Impl::PublishStatus(const Settings& cfg) {
     stats.maxineAvailable = maxineOk;
     auto unavailable = [&](FxInfo& i, bool wanted) {
         i.state = wanted ? FxState::Unavailable : FxState::Off;
-        i.text = wanted ? ("indisponível: " + MaxineRuntime::Reason()) : "desligado";
+        i.text = wanted ? MaxineRuntime::Reason() : Msg(Str::FxStateOff);
     };
     if (maxineOk) {
         stats.denoise = dn.Info();
@@ -566,7 +567,7 @@ bool FramePipeline::Process(const uint8_t* jpeg, size_t size, uint8_t* nv12) {
     BgBlurEffect* blurE;
     s.ManageEffects(cfg, s.inW, s.inH, dnE, arE, srE, gsE, blurE);
 
-    PipelineStats local;  // tempos desta rodada
+    PipelineStats local;  // timings of this round
     const unsigned W = s.inW, H = s.inH;
     const uint8_t* img = s.cpuIn.data();
     int iw = int(W), ih = int(H), ipitch = int(W) * 3;
@@ -597,13 +598,13 @@ bool FramePipeline::Process(const uint8_t* jpeg, size_t size, uint8_t* nv12) {
                 ph = int(H);
             }
         } else {
-            // falha na GPU neste quadro: segue na CPU e tenta de novo em 3 s (sem encher o log)
-            if (s.gpuFailures++ < 3) Log("pipeline: falha na GPU (%s); quadro processado só na CPU", s.lastGpuError.c_str());
+            // GPU failure on this frame: carry on on the CPU and try again in 3 s (without flooding the log)
+            if (s.gpuFailures++ < 3) Log("pipeline: GPU failure (%s); frame processed on the CPU only", s.lastGpuError.c_str());
             s.gpuBackoffUntil = now + 3000;
         }
     }
 
-    // fundo virtual
+    // virtual background
     FinalParams fp;
     fp.src = img;
     fp.sw = iw;
@@ -628,18 +629,18 @@ bool FramePipeline::Process(const uint8_t* jpeg, size_t size, uint8_t* nv12) {
                     fp.bg = BgKind::Image;
                     fp.bgImage = &s.bgImage;
                 } else {
-                    fp.bg = BgKind::Solid;  // sem imagem válida: cinza escuro
+                    fp.bg = BgKind::Solid;  // no valid image: dark gray
                     fp.solidR = fp.solidG = fp.solidB = 32;
                 }
                 break;
             case BgMode::Blur:
                 if (!plate) {
-                    // desfoque na CPU: reduz 4x e aplica um desfoque de caixa (3 passadas) na versão pequena
+                    // blur on the CPU: downscale 4x and apply a box blur (3 passes) to the small version
                     int dw = 0, dh = 0;
                     DownscaleBgr(s.cpuIn.data(), int(W), int(H), int(W) * 3, 4, s.plateSmall, dw, dh);
                     int radius = std::max(1, int(std::lround(cfg.bg.blur / 100.0 * 10.0)));
                     if (cfg.bg.blur > 0) {
-                        // máscara na mesma escala reduzida (média de blocos 4x4), para o desfoque ignorar a pessoa
+                        // mask at the same reduced scale (average of 4x4 blocks), so the blur ignores the person
                         s.plateMask.resize(size_t(dw) * dh);
                         for (int y = 0; y < dh; y++)
                             for (int x = 0; x < dw; x++) {
@@ -674,7 +675,7 @@ bool FramePipeline::Process(const uint8_t* jpeg, size_t size, uint8_t* nv12) {
         st.msDecode = Ema(st.msDecode, msDecode);
         st.msFinal = Ema(st.msFinal, msFinal);
         st.msTotal = Ema(st.msTotal, msTotal);
-        // os tempos de GPU só entram na média quando o estágio rodou (senão zeram suavemente)
+        // GPU timings only enter the average when the stage ran (otherwise they decay smoothly to zero)
         st.msUpload = anyGpu ? Ema(st.msUpload, local.msUpload) : st.msUpload * 0.9;
         st.msDenoise = dnE ? Ema(st.msDenoise, local.msDenoise) : 0;
         st.msArtifact = arE ? Ema(st.msArtifact, local.msArtifact) : 0;

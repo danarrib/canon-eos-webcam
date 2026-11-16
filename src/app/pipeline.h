@@ -1,13 +1,13 @@
-// Pipeline de imagem da ponte: JPEG do Live View -> NV12 1920x1080.
+// Image pipeline of the bridge: Live View JPEG -> NV12 1920x1080.
 //
-//   JPEG -> decodifica (WIC, CPU) -> recorte 16:9 ancorado na base (1056x594)
-//        -> [Denoise] -> [Artifact Reduction]     (GPU, Maxine, na resolução de origem)
-//        -> [Green Screen: máscara]               (GPU, Maxine, na resolução de origem)
-//        -> Super Resolution 2x (2112x1188) ou, sem ela, aumento simples
-//        -> reduz/amplia para 1920x1080 + ajustes de imagem + composição do fundo + NV12 (CPU)
+//   JPEG -> decode (WIC, CPU) -> 16:9 crop anchored at the bottom (1056x594)
+//        -> [Denoise] -> [Artifact Reduction]     (GPU, Maxine, at the source resolution)
+//        -> [Green Screen: mask]                  (GPU, Maxine, at the source resolution)
+//        -> Super Resolution 2x (2112x1188) or, without it, plain upscaling
+//        -> downscale/upscale to 1920x1080 + image adjustments + background compositing + NV12 (CPU)
 //
-// Se o runtime do Maxine não existir ou a GPU falhar, os efeitos de IA ficam indisponíveis e o
-// pipeline segue só na CPU (decodifica, recorta, escala, ajusta, converte).
+// If the Maxine runtime is missing or the GPU fails, the AI effects become unavailable and the
+// pipeline carries on on the CPU only (decode, crop, scale, adjust, convert).
 #pragma once
 
 #include <atomic>
@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "i18n.h"
 #include "settings.h"
 
 namespace eoscam {
@@ -25,25 +26,31 @@ enum class FxState { Off, Loading, Active, Failed, Unavailable };
 
 struct FxInfo {
     FxState state = FxState::Off;
-    std::string text;  // ex.: "carregando...", "ativo", "falhou: ..."
+    Msg text;  // e.g. "loading the model...", "active", "failed: ..."; for Unavailable, the reason
 };
+
+// Text shown for an effect ("unavailable: <reason>" when the Maxine runtime is missing).
+inline std::string FxText(const FxInfo& i, Lang l = CurrentLang()) {
+    std::string t = Text(i.text, l);
+    return i.state == FxState::Unavailable ? Tr(Str::UnavailablePrefix, l) + t : t;
+}
 
 struct PipelineStats {
     bool maxineAvailable = false;
-    std::string maxineReason;   // por que está indisponível
+    Msg maxineReason;  // why it is unavailable
     std::string maxineVersion;
     FxInfo denoise, artifact, superRes, greenScreen, blur;
-    std::string backgroundNote;  // problemas com a imagem de fundo, etc.
-    // médias móveis, em ms por quadro
-    double msDecode = 0;    // CPU: decodificação JPEG + recorte
-    double msUpload = 0;    // GPU: envio ao dispositivo
+    Msg backgroundNote;  // problems with the background image, etc.
+    // moving averages, in ms per frame
+    double msDecode = 0;    // CPU: JPEG decoding + crop
+    double msUpload = 0;    // GPU: upload to the device
     double msDenoise = 0;   // GPU
     double msArtifact = 0;  // GPU
     double msSuperRes = 0;  // GPU
-    double msSegment = 0;   // GPU: máscara (Green Screen) + desfoque do SDK
-    double msDownload = 0;  // GPU: retorno da imagem e da máscara
-    double msFinal = 0;     // CPU: escala + ajustes + fundo + NV12
-    double msTotal = 0;     // total por quadro
+    double msSegment = 0;   // GPU: mask (Green Screen) + SDK blur
+    double msDownload = 0;  // GPU: download of the image and the mask
+    double msFinal = 0;     // CPU: scaling + adjustments + background + NV12
+    double msTotal = 0;     // total per frame
     double fpsOut = 0;
     uint64_t frames = 0;
     uint32_t outputWidth = 0, outputHeight = 0;
@@ -58,22 +65,22 @@ public:
     FramePipeline(const FramePipeline&) = delete;
     FramePipeline& operator=(const FramePipeline&) = delete;
 
-    // Inicializa WIC e o runtime do Maxine (não carrega os modelos). Chamar na thread de processamento.
+    // Initializes WIC and the Maxine runtime (does not load the models). Call on the processing thread.
     bool Init();
 
-    // Pré-carrega os efeitos ativos nas configurações (chamar quando a webcam é aberta), para o
-    // primeiro quadro já sair processado. Roda em segundo plano.
+    // Preloads the effects enabled in the settings (call when the webcam is opened), so the first frame
+    // already comes out processed. Runs in the background.
     void Prewarm();
 
-    // Zera o estado temporal dos efeitos (Denoise, Green Screen): chamar quando o fluxo recomeça.
+    // Resets the temporal state of the effects (Denoise, Green Screen): call when the stream restarts.
     void StreamRestarted();
 
-    // Processa um quadro JPEG do Live View e escreve o NV12 1920x1080 (kFrameBytes) em nv12.
+    // Processes a Live View JPEG frame and writes the NV12 1920x1080 (kFrameBytes) to nv12.
     bool Process(const uint8_t* jpeg, size_t size, uint8_t* nv12);
 
     PipelineStats Stats() const;
 
-    // Pede (para a próxima vez em que um quadro for processado) uma cópia do NV12 para a prévia do painel.
+    // Asks (for the next time a frame is processed) for a copy of the NV12 for the panel preview.
     void RequestPreview() { previewWanted_ = true; }
     bool GetPreview(std::vector<uint8_t>& nv12, uint64_t& frameNo);
 

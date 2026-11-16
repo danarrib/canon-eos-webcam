@@ -1,9 +1,8 @@
-// Fonte de mídia para câmera virtual do Windows 11 (MFCreateVirtualCamera).
+// Media source for a Windows 11 virtual camera (MFCreateVirtualCamera).
 //
-// O Frame Server cria o Activator (CLSID registrado em HKLM), chama ActivateObject
-// e obtém a MediaSource. Ela expõe um único stream de vídeo NV12 em alguns tamanhos
-// 16:9 e 4:3. Os quadros vêm do eoscam.exe pela memória compartilhada (shared.h);
-// sem quadros, o stream mostra uma tela explicando o que está faltando.
+// The Frame Server creates the Activator (CLSID registered in HKLM), calls ActivateObject and gets the
+// MediaSource. It exposes a single NV12 video stream at 1920x1080. The frames come from eoscam.exe through
+// shared memory (shared.h); without frames, the stream shows a screen explaining what is missing.
 
 #include <windows.h>
 #include <mfapi.h>
@@ -21,11 +20,12 @@
 #include <thread>
 #include <vector>
 
+#include "i18n.h"
 #include "log.h"
 #include "renderer.h"
 #include "shared.h"
 
-// IKsControl em modo usuário (o ks.h do SDK só declara a versão de kernel).
+// User-mode IKsControl (the SDK's ks.h only declares the kernel version).
 #ifndef _IKsControl_
 #define _IKsControl_
 MIDL_INTERFACE("28F54685-06FD-11D2-B27A-00A0C9223196")
@@ -44,9 +44,9 @@ namespace eoscam {
 namespace {
 
 struct VideoSize { UINT w, h; };
-// Só 1920x1080: com várias opções, alguns programas abriam primeiro em 640x480 (4:3) e trocavam
-// para 16:9 um segundo depois. A ponte (eoscam.exe) entrega o quadro NV12 1920x1080 já processado
-// na GPU (recorte 16:9, efeitos de IA, ajustes de imagem e fundo); esta DLL só copia o quadro.
+// 1920x1080 only: with several options, some programs first opened at 640x480 (4:3) and switched to 16:9 a
+// second later. The bridge (eoscam.exe) delivers the NV12 1920x1080 frame already processed on the GPU
+// (16:9 crop, AI effects, image adjustments and background); this DLL only copies the frame.
 constexpr VideoSize kSizes[] = {{kFrameWidth, kFrameHeight}};
 constexpr UINT kFps = 30;
 
@@ -75,26 +75,27 @@ HRESULT CreateNv12Type(UINT w, UINT h, IMFMediaType** out) {
 
 constexpr HRESULT kKsNotFound = HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
 
+// Text of the warning screen shown while there is no live image.
 void DescribeState(SharedChannel& chan, std::wstring& title, std::wstring& detail) {
     if (!chan.IsOpen()) {
         title = L"Canon EOS Webcam";
-        detail = L"Inicializando...";
+        detail = TrW(Str::SrcInitializing);
     } else if (!chan.ProducerAlive()) {
-        title = L"O eoscam não está em execução";
-        detail = L"Inicie a ponte com \"eoscam start\" (ou ative \"eoscam autostart on\").";
+        title = TrW(Str::SrcNotRunningTitle);
+        detail = TrW(Str::SrcNotRunningDetail);
     } else {
         switch (chan.Producer()) {
             case ProducerState::NoCamera:
-                title = L"Câmera Canon não encontrada";
-                detail = L"Verifique se a câmera está ligada, no modo de foto, e conectada via USB.";
+                title = TrW(Str::SrcNoCameraTitle);
+                detail = TrW(Str::SrcNoCameraDetail);
                 break;
             case ProducerState::Streaming:
-                title = L"Aguardando imagem...";
+                title = TrW(Str::SrcWaitingTitle);
                 detail = L"";
                 break;
             default:
-                title = L"Ligando a câmera...";
-                detail = L"Iniciando o Live View da Canon.";
+                title = TrW(Str::SrcStartingTitle);
+                detail = TrW(Str::SrcStartingDetail);
                 break;
         }
     }
@@ -223,7 +224,7 @@ public:
     IFACEMETHODIMP KsMethod(PKSMETHOD, ULONG, LPVOID, ULONG, ULONG*) override { return kKsNotFound; }
     IFACEMETHODIMP KsEvent(PKSEVENT, ULONG, LPVOID, ULONG, ULONG*) override { return kKsNotFound; }
 
-    // ---- interno (chamado pela MediaSource)
+    // ---- internal (called by the MediaSource)
     HRESULT Start(IMFMediaType* type, const PROPVARIANT* startPos) {
         UINT32 w = 0, h = 0;
         HRESULT hr = MFGetAttributeSize(type, MF_MT_FRAME_SIZE, &w, &h);
@@ -272,7 +273,7 @@ public:
         StopWorker();
         queue_->Shutdown();
         std::lock_guard<std::mutex> l(mutex_);
-        parent_.Reset();  // quebra o ciclo fonte <-> stream
+        parent_.Reset();  // breaks the source <-> stream cycle
     }
 
     IMFStreamDescriptor* Descriptor() const { return desc_.Get(); }
@@ -337,7 +338,7 @@ private:
         }
         FrameRenderer renderer;
         HRESULT hr = renderer.Init(w, h);
-        if (FAILED(hr)) Log("stream: falha ao iniciar o renderizador (hr=0x%08lX)", (unsigned long)hr);
+        if (FAILED(hr)) Log("stream: failed to start the renderer (hr=0x%08lX)", (unsigned long)hr);
 
         SharedChannel chan;
         uint64_t lastOpenTry = 0, shownFrame = 0, lastLiveTick = 0, lastDelivery = 0;
@@ -349,15 +350,15 @@ private:
         LARGE_INTEGER qpf;
         QueryPerformanceFrequency(&qpf);
 
-        Log("stream: worker iniciado %ux%u", w, h);
+        Log("stream: worker started %ux%u", w, h);
         while (!stopWorker_) {
             uint64_t now = NowTick();
             if (!chan.IsOpen() && now - lastOpenTry > 1000) {
                 lastOpenTry = now;
                 DWORD err = 0;
-                if (chan.Open(true, &err)) Log("stream: canal compartilhado aberto");
+                if (chan.Open(true, &err)) Log("stream: shared channel open");
                 else if (!loggedOpenError) {
-                    Log("stream: não consegui abrir/criar o canal compartilhado (erro %lu)", err);
+                    Log("stream: couldn't open/create the shared channel (error %lu)", err);
                     loggedOpenError = true;
                 }
             }
@@ -375,7 +376,7 @@ private:
                 else Sleep(10);
                 latest = chan.LatestFrameNumber();
                 now = NowTick();
-                // sem quadro novo: repete a última imagem de vez em quando para o cliente não travar
+                // no new frame: repeat the last image every now and then so the client doesn't stall
                 uint64_t maxGap = (haveLive && now - lastLiveTick < 1500) ? 250 : 100;
                 if (latest == shownFrame && now - lastDelivery < maxGap) continue;
             }
@@ -392,7 +393,7 @@ private:
                         shownFrame = latest;
                         statCopyMs += double(b.QuadPart - a.QuadPart) * 1000.0 / double(qpf.QuadPart);
                         renderer.InvalidateMessage();
-                        if (!haveLive) Log("stream: imagem ao vivo (quadro %llu)", (unsigned long long)meta.frameNumber);
+                        if (!haveLive) Log("stream: live image (frame %llu)", (unsigned long long)meta.frameNumber);
                         haveLive = live = true;
                         incompatible = false;
                         lastLiveTick = NowTick();
@@ -401,21 +402,21 @@ private:
                         shownFrame = latest;
                         incompatible = true;
                         if (++statIncompat <= 5)
-                            Log("stream: quadro %llu incompatível (formato %08lX %ux%u, %u bytes; esperado NV12 %ux%u)",
+                            Log("stream: incompatible frame %llu (format %08lX %ux%u, %u bytes; expected NV12 %ux%u)",
                                 (unsigned long long)meta.frameNumber, (unsigned long)meta.format, meta.width,
                                 meta.height, meta.size, w, h);
                         break;
                     default:
                         if (++statReadFail <= 5)
-                            Log("stream: falha ao ler quadro %llu do canal", (unsigned long long)latest);
+                            Log("stream: failed to read frame %llu from the channel", (unsigned long long)latest);
                         break;
                 }
             }
             if (!live && (!haveLive || NowTick() - lastLiveTick > 1500)) {
                 haveLive = false;
                 if (incompatible) {
-                    title = L"Versões incompatíveis do eoscam";
-                    detail = L"A ponte (eoscam.exe) e a câmera virtual são de versões diferentes: reinstale o eoscam.";
+                    title = TrW(Str::SrcIncompatibleTitle);
+                    detail = TrW(Str::SrcIncompatibleDetail);
                 } else {
                     DescribeState(chan, title, detail);
                 }
@@ -426,29 +427,29 @@ private:
             bool any = false;
             if (!PopToken(token, any)) continue;
             hr = Deliver(renderer.Nv12(), token.Get());
-            if (FAILED(hr)) Log("stream: falha ao entregar amostra (hr=0x%08lX)", (unsigned long)hr);
+            if (FAILED(hr)) Log("stream: failed to deliver a sample (hr=0x%08lX)", (unsigned long)hr);
             lastDelivery = NowTick();
             statDelivered++;
             if (live) statLive++;
 
             if (NowTick() - statsTick >= 10000) {
                 double secs = (NowTick() - statsTick) / 1000.0;
-                Log("stream: %.1f quadros/s entregues (%.1f da câmera), cópia média %.2f ms, "
-                    "falhas leitura/incompatíveis %llu/%llu, produtor %s estado %ld",
+                Log("stream: %.1f frames/s delivered (%.1f from the camera), average copy %.2f ms, "
+                    "read failures/incompatible %llu/%llu, producer %s state %ld",
                     statDelivered / secs, statLive / secs, statLive ? statCopyMs / statLive : 0.0,
                     (unsigned long long)statReadFail, (unsigned long long)statIncompat,
-                    chan.ProducerAlive() ? "vivo" : "ausente", long(chan.Producer()));
+                    chan.ProducerAlive() ? "alive" : "absent", long(chan.Producer()));
                 statsTick = NowTick();
                 statDelivered = statLive = 0;
                 statCopyMs = 0;
             }
         }
-        Log("stream: worker encerrado");
+        Log("stream: worker finished");
         if (SUCCEEDED(hrCo)) CoUninitialize();
     }
 
     std::mutex mutex_;    // estado
-    std::mutex control_;  // criação/parada do worker
+    std::mutex control_;  // worker creation/teardown
     ComPtr<IMFMediaEventQueue> queue_;
     ComPtr<IMFStreamDescriptor> desc_;
     ComPtr<IMFAttributes> attrs_;
@@ -482,7 +483,7 @@ public:
         hr = MFCreatePresentationDescriptor(1, sds, &pd_);
         if (FAILED(hr)) return hr;
         pd_->SelectStream(0);
-        Log("source: criada");
+        Log("source: created");
         return S_OK;
     }
 
@@ -609,7 +610,7 @@ private:
 };
 
 // =====================================================================================
-// Activator (classe COM registrada)
+// Activator (registered COM class)
 
 class __declspec(uuid("D4DFB62F-F0E4-4DD7-A4AA-EDB7F8E013BC")) Activator
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, ChainInterfaces<IMFActivate, IMFAttributes>, FtmBase> {
@@ -617,7 +618,7 @@ public:
     Activator() {
         MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET);
         MFCreateAttributes(&attrs_, 4);
-        Log("activator: criado");
+        Log("activator: created");
     }
     ~Activator() override { MFShutdown(); }
 
@@ -628,7 +629,7 @@ public:
         if (!source_) {
             HRESULT hr = MakeAndInitialize<MediaSource>(&source_);
             if (FAILED(hr)) {
-                Log("activator: falha ao criar a fonte (hr=0x%08lX)", (unsigned long)hr);
+                Log("activator: failed to create the source (hr=0x%08lX)", (unsigned long)hr);
                 return hr;
             }
         }
@@ -646,7 +647,7 @@ public:
         return S_OK;
     }
 
-    // ---- IMFAttributes (repassa para um armazenamento interno)
+    // ---- IMFAttributes (forwarded to an internal store)
     IFACEMETHODIMP GetItem(REFGUID k, PROPVARIANT* v) override { return attrs_->GetItem(k, v); }
     IFACEMETHODIMP GetItemType(REFGUID k, MF_ATTRIBUTE_TYPE* t) override { return attrs_->GetItemType(k, t); }
     IFACEMETHODIMP CompareItem(REFGUID k, REFPROPVARIANT v, BOOL* r) override { return attrs_->CompareItem(k, v, r); }
@@ -689,7 +690,7 @@ CoCreatableClass(Activator);
 }  // namespace eoscam
 
 // =====================================================================================
-// Exportações da DLL
+// DLL exports
 
 static HMODULE g_module = nullptr;
 

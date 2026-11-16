@@ -1,9 +1,10 @@
-// Log com horário em stdout (console no "eoscam run"; arquivo ProgramData\EosCam\eoscam.log no eoscam-bg).
+// Timestamped log on stdout (the console in "eoscam run"; ProgramData\EosCam\eoscam.log in eoscam-bg).
+// Log messages are always in English.
 #pragma once
 
 namespace eoscam {
 
-// Thread-safe: várias threads (captura, processamento, painel) escrevem no mesmo log.
+// Thread-safe: several threads (capture, processing, panel) write to the same log.
 void Log(const char* fmt, ...);
 
 }  // namespace eoscam

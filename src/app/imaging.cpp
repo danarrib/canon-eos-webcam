@@ -59,19 +59,19 @@ void ThreadPool::ParallelFor(int n, const std::function<void(int)>& fn, bool par
     cv_.notify_all();
     for (int i = next_.fetch_add(1); i < n; i = next_.fetch_add(1)) fn(i);
     std::unique_lock<std::mutex> lk(mu_);
-    // espera os workers que entraram nesta geração terminarem; os que ainda não acordaram vão
-    // encontrar next_ >= n e sair sem fazer nada
+    // waits for the workers that joined this generation to finish; the ones that haven't woken up yet will
+    // find next_ >= n and leave without doing anything
     doneCv_.wait(lk, [&] { return active_ == 0; });
     count_ = 0;
 }
 
-// ---------------------------------------------------------------- ajustes
+// ---------------------------------------------------------------- adjustments
 
 void BuildAdjust(const ImageSettings& s, AdjustLut& lut) {
     lut.identity = s.IsIdentity();
     lut.sat = int(std::lround(s.saturation * 128.0 / 100.0));
-    double tg = s.temperature / 100.0 * 0.25;  // quente: mais vermelho, menos azul
-    double mg = s.tint / 100.0 * 0.25;         // magenta: menos verde
+    double tg = s.temperature / 100.0 * 0.25;  // warm: more red, less blue
+    double mg = s.tint / 100.0 * 0.25;         // magenta: less green
     double gainR = 1.0 + tg, gainB = 1.0 - tg, gainG = 1.0 - mg;
     double c = s.contrast * 2.55;
     double cf = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c));
@@ -94,11 +94,11 @@ namespace {
 
 inline uint8_t Cl(int v) { return uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
-// Tabela de posições/pesos para reamostrar uma linha de sw pixels em dw pixels (bilinear).
+// Table of positions/weights to resample a row of sw pixels into dw pixels (bilinear).
 struct HTable {
     int srcW = 0, dstW = 0;
     std::vector<int> i0, i1;
-    std::vector<uint16_t> w;  // peso de i1, 0..256
+    std::vector<uint16_t> w;  // weight of i1, 0..256
     void Build(int sw, int dw) {
         if (sw == srcW && dw == dstW) return;
         srcW = sw;
@@ -175,23 +175,23 @@ inline void HResample3(const uint8_t* v, const HTable& t, uint8_t* out) {
     }
 }
 
-// A CPU tem AVX2 (e o sistema operacional o habilita)?
+// Does the CPU have AVX2 (and does the operating system enable it)?
 bool HasAvx2() {
     static const bool ok = [] {
         int r[4];
         __cpuid(r, 0);
         if (r[0] < 7) return false;
         __cpuidex(r, 1, 0);
-        if (!(r[2] & (1 << 27)) || !(r[2] & (1 << 28))) return false;  // OSXSAVE e AVX
-        if ((_xgetbv(0) & 6) != 6) return false;                       // estado YMM habilitado
+        if (!(r[2] & (1 << 27)) || !(r[2] & (1 << 28))) return false;  // OSXSAVE and AVX
+        if ((_xgetbv(0) & 6) != 6) return false;                       // YMM state enabled
         __cpuidex(r, 7, 0);
         return (r[1] & (1 << 5)) != 0;
     }();
     return ok;
 }
 
-// Reamostragem horizontal de um plano com 8 pixels por vez. Um gather de 32 bits em i0 já traz os dois
-// vizinhos (i0 e i0+1; em i1 != i0+1, na borda direita, o peso é zero). v precisa ter 3 bytes de folga.
+// Horizontal resampling of a plane, 8 pixels at a time. A 32-bit gather at i0 already brings both
+// neighbors (i0 and i0+1; where i1 != i0+1, at the right edge, the weight is zero). v needs 3 spare bytes.
 void HResample1Avx2(const uint8_t* v, const HTable& t, uint8_t* out) {
     const int n = t.dstW;
     const __m256i m255 = _mm256_set1_epi32(255), c256 = _mm256_set1_epi32(256), c128 = _mm256_set1_epi32(128);
@@ -242,8 +242,8 @@ inline uint8_t LumaOf(int r, int g, int b) { return uint8_t(((66 * r + 129 * g +
 inline uint8_t CbOf(int r, int g, int b) { return Cl(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128); }
 inline uint8_t CrOf(int r, int g, int b) { return Cl(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128); }
 
-// Linha de um plano (1 canal) reamostrada para dw pixels: mistura vertical na largura de origem e depois
-// horizontal pela tabela.
+// Row of a plane (1 channel) resampled to dw pixels: vertical blend at the source width, then horizontal
+// through the table.
 inline void ScaleRow(const uint8_t* plane, int pitch, int srcH, int dstH, int y, const HTable& t, uint8_t* tmp,
                      uint8_t* out) {
     VPos vp = VertPos(y, srcH, dstH);
@@ -254,9 +254,9 @@ inline void ScaleRow(const uint8_t* plane, int pitch, int srcH, int dstH, int y,
 inline void BlendRow(uint8_t* f, const uint8_t* b, const uint8_t* a, int n) {
     int i = 0;
     if (HasAvx2()) {
-        // mesma conta do laço escalar abaixo, sem desvios: t = f*a + b*(255-a) + 128; (t + (t>>8)) >> 8.
-        // Com a = 0 ou 255 o resultado coincide com b ou f, então não precisa tratar os extremos à parte.
-        // t <= 65153 e t + (t>>8) <= 65407 cabem em 16 bits sem sinal.
+        // same math as the scalar loop below, without branches: t = f*a + b*(255-a) + 128; (t + (t>>8)) >> 8.
+        // With a = 0 or 255 the result equals b or f, so the extremes need no special handling.
+        // t <= 65153 and t + (t>>8) <= 65407 fit in 16 unsigned bits.
         const __m256i c255 = _mm256_set1_epi16(255), c128 = _mm256_set1_epi16(128), zero = _mm256_setzero_si256();
         for (; i + 32 <= n; i += 32) {
             __m256i F = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(f + i));
@@ -295,7 +295,7 @@ struct Scratch {
     std::vector<uint8_t> tmp, rowY, rowU, rowV, aY, aU, bgY, bgU, bgV;
     void Ensure(int vw) {
         auto fit = [](std::vector<uint8_t>& v, size_t n) { if (v.size() < n) v.resize(n); };
-        fit(tmp, size_t(vw) + 16);  // folga para o gather do AVX2
+        fit(tmp, size_t(vw) + 16);  // slack for the AVX2 gather
         fit(rowY, kOutW);
         fit(rowU, kOutW / 2);
         fit(rowV, kOutW / 2);
@@ -310,7 +310,7 @@ struct Scratch {
 struct FinalCtx {
     const FinalParams* p;
     const YuvImage* fg;
-    const YuvImage* plate;  // modo Blur
+    const YuvImage* plate;  // Blur mode
     const Tables* tb;
     bool useBg;
     uint8_t solidY, solidU, solidV;
@@ -351,7 +351,7 @@ void RenderBand(const FinalCtx& c, int yStart, int yEnd) {
         }
         if (y & 1) continue;
 
-        // linha de crominância (metade da resolução nas duas direções)
+        // chroma row (half the resolution in both directions)
         const int r = y / 2;
         uint8_t* dstUV = uvPlane + size_t(r) * kOutW;
         int fcw = fg.w / 2, fch = fg.h / 2;
@@ -389,13 +389,13 @@ void RenderBand(const FinalCtx& c, int yStart, int yEnd) {
 
 }  // namespace
 
-// Versão AVX2 do núcleo de BgrToYuv sem ajustes: processa 16 pixels (de duas linhas) por iteração e devolve
-// quantos pixels consumiu (múltiplo de 16); o resto fica para o laço escalar. Produz exatamente os mesmos
-// bytes do laço escalar (mesma aritmética inteira, mesmos arredondamentos).
+// AVX2 version of the BgrToYuv kernel without adjustments: processes 16 pixels (from two rows) per iteration
+// and returns how many pixels it consumed (a multiple of 16); the rest is left to the scalar loop. Produces
+// exactly the same bytes as the scalar loop (same integer arithmetic, same rounding).
 static int BgrPairToYuvAvx2(const uint8_t* a, const uint8_t* b, uint8_t* y0, uint8_t* y1, uint8_t* du, uint8_t* dv, int w) {
-    // máscaras de pshufb para separar os canais de 16 pixels BGR (48 bytes = 3 blocos de 16)
+    // pshufb masks to split the channels of 16 BGR pixels (48 bytes = 3 blocks of 16)
     struct Masks {
-        __m128i m[3][3];  // [canal][bloco]
+        __m128i m[3][3];  // [channel][block]
         Masks() {
             for (int c = 0; c < 3; c++) {
                 alignas(16) uint8_t t[3][16];
@@ -426,7 +426,7 @@ static int BgrPairToYuvAvx2(const uint8_t* a, const uint8_t* b, uint8_t* y0, uin
     auto luma = [&](__m256i r, __m256i g, __m256i bl) {
         __m256i t = _mm256_add_epi16(_mm256_add_epi16(_mm256_mullo_epi16(r, k66), _mm256_mullo_epi16(g, k129)),
                                      _mm256_add_epi16(_mm256_mullo_epi16(bl, k25), c128));
-        return _mm256_add_epi16(_mm256_srli_epi16(t, 8), c16);  // t < 65536: deslocamento lógico
+        return _mm256_add_epi16(_mm256_srli_epi16(t, 8), c16);  // t < 65536: logical shift
     };
     auto store16 = [](uint8_t* dst, __m256i v) {  // 16 x u16 (0..255) -> 16 bytes
         __m256i p = _mm256_packus_epi16(v, v);
@@ -442,7 +442,7 @@ static int BgrPairToYuvAvx2(const uint8_t* a, const uint8_t* b, uint8_t* y0, uin
         __m256i b1 = _mm256_cvtepu8_epi16(B1), g1 = _mm256_cvtepu8_epi16(G1), r1 = _mm256_cvtepu8_epi16(R1);
         store16(y0 + x, luma(r0, g0, b0));
         store16(y1 + x, luma(r1, g1, b1));
-        // soma 2x2: linhas somadas e pares horizontais somados (madd) -> 8 valores de 32 bits
+        // 2x2 sum: rows added and horizontal pairs added (madd) -> 8 32-bit values
         __m256i sb = _mm256_madd_epi16(_mm256_add_epi16(b0, b1), ones);
         __m256i sg = _mm256_madd_epi16(_mm256_add_epi16(g0, g1), ones);
         __m256i sr = _mm256_madd_epi16(_mm256_add_epi16(r0, r1), ones);
@@ -475,8 +475,8 @@ static int BgrPairToYuvAvx2(const uint8_t* a, const uint8_t* b, uint8_t* y0, uin
     return x;
 }
 
-// BGR u8 -> planos Y (largura x altura) e U, V (metade da resolução, média 2x2), BT.601 de faixa
-// limitada. w e h precisam ser pares. Aplica os ajustes (LUT + saturação) na passada.
+// BGR u8 -> Y plane (width x height) and U, V planes (half resolution, 2x2 average), limited-range BT.601.
+// w and h must be even. Applies the adjustments (LUT + saturation) on the way.
 void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj, YuvImage& out, ThreadPool& pool) {
     out.w = w;
     out.h = h;
@@ -487,7 +487,7 @@ void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj,
     const int pairs = h / 2;
     const int perBand = 16;
     const int n = (pairs + perBand - 1) / perBand;
-    // imagens pequenas sem ajustes (o caminho padrão) ficam numa thread só: é o que menos gasta CPU
+    // small images without adjustments (the default path) stay on a single thread: that spends the least CPU
     const bool par = useAdj || size_t(w) * h > 1'000'000;
     pool.ParallelFor(n, [&](int band) {
         int p0 = band * perBand, p1 = std::min(pairs, p0 + perBand);
@@ -545,14 +545,14 @@ void RenderFinal(const FinalParams& p, ThreadPool& pool) {
             c.solidU = CbOf(p.solidR, p.solidG, p.solidB);
             c.solidV = CrOf(p.solidR, p.solidG, p.solidB);
         } else if (p.bg == BgKind::Blur) {
-            // o fundo desfocado é a própria imagem e recebe os mesmos ajustes
+            // the blurred background is the image itself and gets the same adjustments
             BgrToYuv(p.plate, p.pw & ~1, p.ph & ~1, p.pw * 3, p.adj, plate, pool);
             tb.plY.Build(plate.w, kOutW);
             tb.plC.Build(plate.w / 2, kOutW / 2);
             c.plate = &plate;
         }
     }
-    // faixas de linhas pares; mais faixas que threads para equilibrar a carga
+    // bands of even rows; more bands than threads to balance the load
     const int bands = 12;
     int rowsPerBand = (kOutH / bands + 1) & ~1;
     int n = (kOutH + rowsPerBand - 1) / rowsPerBand;
@@ -563,7 +563,7 @@ void RenderFinal(const FinalParams& p, ThreadPool& pool) {
     }, p.sw * p.sh > 1'000'000 || c.useBg || (p.adj && !p.adj->identity));
 }
 
-// ---------------------------------------------------------------- máscara, desfoque, fundo
+// ---------------------------------------------------------------- mask, blur, background
 
 void FeatherMask(uint8_t* m, int w, int h, int pitch, std::vector<uint8_t>& tmp) {
     tmp.resize(size_t(w) * h);
@@ -606,7 +606,7 @@ void DownscaleBgr(const uint8_t* src, int sw, int sh, int spitch, int f, std::ve
     }
 }
 
-// Passada de caixa com soma deslizante em uma linha/coluna de n elementos (3 canais), bordas replicadas.
+// Box pass with a running sum over a row/column of n elements (3 channels), replicated edges.
 static void BoxLine(const uint8_t* in, uint8_t* out, int n, int stride, int radius) {
     int win = 2 * radius + 1;
     for (int c = 0; c < 3; c++) {
@@ -629,7 +629,7 @@ void BoxBlurBgr(uint8_t* img, int w, int h, int radius, std::vector<uint8_t>& tm
     }
 }
 
-// Soma deslizante em float (4 canais intercalados), bordas replicadas.
+// Running sum in float (4 interleaved channels), replicated edges.
 static void BoxLineF(const float* in, float* out, int n, int stride, int radius) {
     const float inv = 1.0f / float(2 * radius + 1);
     for (int c = 0; c < 4; c++) {
@@ -646,7 +646,7 @@ static void BoxLineF(const float* in, float* out, int n, int stride, int radius)
 void MaskedBoxBlurBgr(uint8_t* img, const uint8_t* mask, int w, int h, int radius) {
     if (radius < 1) return;
     const size_t n = size_t(w) * h;
-    // 4 canais: B*peso, G*peso, R*peso e o peso (peso = fundo = 1 - máscara)
+    // 4 channels: B*weight, G*weight, R*weight and the weight (weight = background = 1 - mask)
     std::vector<float> a(n * 4), b(n * 4);
     for (size_t i = 0; i < n; i++) {
         float wgt = (255 - mask[i]) / 255.0f;
@@ -659,14 +659,14 @@ void MaskedBoxBlurBgr(uint8_t* img, const uint8_t* mask, int w, int h, int radiu
         for (int y = 0; y < h; y++) BoxLineF(a.data() + size_t(y) * w * 4, b.data() + size_t(y) * w * 4, w, 4, radius);
         for (int x = 0; x < w; x++) BoxLineF(b.data() + size_t(x) * 4, a.data() + size_t(x) * 4, h, w * 4, radius);
     }
-    // onde quase não há fundo por perto (centro da pessoa), usa o desfoque comum como reserva
+    // where there is almost no background nearby (center of the person), uses the plain blur as a fallback
     std::vector<uint8_t> plain(img, img + n * 3), tmp;
     BoxBlurBgr(plain.data(), w, h, radius, tmp);
     for (size_t i = 0; i < n; i++) {
         float wgt = a[i * 4 + 3];
         for (int c = 0; c < 3; c++) {
             float v = wgt > 0.02f ? a[i * 4 + size_t(c)] / wgt : float(plain[i * 3 + size_t(c)]);
-            if (wgt <= 0.15f && wgt > 0.02f) {  // transição suave para a reserva
+            if (wgt <= 0.15f && wgt > 0.02f) {  // smooth transition to the fallback
                 float t = (wgt - 0.02f) / 0.13f;
                 v = v * t + float(plain[i * 3 + size_t(c)]) * (1 - t);
             }
@@ -678,7 +678,7 @@ void MaskedBoxBlurBgr(uint8_t* img, const uint8_t* mask, int w, int h, int radiu
 void CoverBgr(const uint8_t* src, int sw, int sh, int spitch, int dw, int dh, std::vector<uint8_t>& dst) {
     dst.assign(size_t(dw) * dh * 3, 0);
     if (sw <= 0 || sh <= 0) return;
-    // recorte central na proporção do destino
+    // center crop at the destination aspect ratio
     double target = double(dw) / dh;
     int cw = sw, ch = sh;
     if (double(sw) / sh > target) cw = std::max(1, int(std::lround(sh * target)));
@@ -686,7 +686,7 @@ void CoverBgr(const uint8_t* src, int sw, int sh, int spitch, int dw, int dh, st
     int cx = (sw - cw) / 2, cy = (sh - ch) / 2;
     const uint8_t* base = src + size_t(cy) * spitch + size_t(cx) * 3;
 
-    // redução por média em blocos enquanto der, para não serrilhar imagens muito maiores que 1080p
+    // block-average downscaling while possible, so images much larger than 1080p don't alias
     std::vector<uint8_t> reduced;
     int f = std::min(cw / dw, ch / dh);
     int pitch = spitch;

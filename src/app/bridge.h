@@ -1,12 +1,12 @@
-// A ponte: liga a câmera quando alguém usa a webcam (ou o painel está aberto), busca os quadros do
-// Live View, processa (FramePipeline) e publica o NV12 1920x1080 no canal compartilhado.
+// The bridge: turns the camera on when someone uses the webcam (or the panel is open), fetches the Live
+// View frames, processes them (FramePipeline) and publishes the NV12 1920x1080 on the shared channel.
 //
-// Duas threads de trabalho:
-//   - captura (a que chama Run): única dona da sessão PTP. Conecta/desconecta, busca os JPEGs, lê os
-//     eventos da câmera e executa a fila de comandos do painel entre um quadro e outro.
-//   - processamento: decodifica, aplica os efeitos na GPU, ajustes e fundo, e publica. Ela recebe
-//     sempre o JPEG mais recente (quadros que chegarem com ela ocupada são descartados), para que a
-//     câmera continue a ~29 fps mesmo quando o processamento demora.
+// Two worker threads:
+//   - capture (the one that calls Run): the only owner of the PTP session. Connects/disconnects, fetches
+//     the JPEGs, reads the camera events and runs the panel's command queue between frames.
+//   - processing: decodes, applies the GPU effects, adjustments and background, and publishes. It always
+//     gets the most recent JPEG (frames that arrive while it is busy are dropped), so the camera keeps
+//     going at ~29 fps even when processing is slow.
 #pragma once
 
 #include <windows.h>
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "canon_camera.h"
+#include "i18n.h"
 #include "pipeline.h"
 #include "settings.h"
 #include "shared.h"
@@ -31,9 +32,9 @@ struct BridgeStatus {
     ProducerState state = ProducerState::Idle;
     bool cameraConnected = false;
     std::string cameraName;
-    bool consumerActive = false;  // algum programa usando a webcam
-    double fpsIn = 0;             // quadros/s vindos da câmera
-    double fpsOut = 0;            // quadros/s publicados
+    bool consumerActive = false;  // some program is using the webcam
+    double fpsIn = 0;             // frames/s coming from the camera
+    double fpsOut = 0;            // frames/s published
     PipelineStats pipeline;
 };
 
@@ -44,39 +45,39 @@ public:
     Bridge(const Bridge&) = delete;
     Bridge& operator=(const Bridge&) = delete;
 
-    // Laço da ponte: bloqueia até RequestStop(), g_stop ou o evento de parada ser sinalizado.
-    // stopEvent pode ser nullptr. Devolve 0.
+    // Bridge loop: blocks until RequestStop(), g_stop or the stop event is signaled.
+    // stopEvent may be nullptr. Returns 0.
     int Run(HANDLE stopEvent, const std::atomic<bool>* externalStop);
     void RequestStop() { stop_ = true; }
 
-    // O painel aberto conta como consumidor: mantém o Live View ligado.
+    // An open panel counts as a consumer: it keeps Live View on.
     void SetPanelOpen(bool open) { panelOpen_ = open; }
 
     BridgeStatus Status() const;
     FramePipeline& Pipeline() { return pipeline_; }
     SettingsStore& Store() { return store_; }
 
-    // ---- ajustes da câmera
-    // Pede para a thread de captura escrever uma propriedade (label: nome para a mensagem de erro).
-    void SetCameraProp(uint32_t prop, uint32_t value, const std::string& label);
-    void SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, const std::string& label);
-    // Cópia do cache de propriedades (false se a câmera não está conectada).
+    // ---- camera settings
+    // Asks the capture thread to write a property (label: name of the setting for the error message).
+    void SetCameraProp(uint32_t prop, uint32_t value, Str label);
+    void SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, Str label);
+    // Copy from the property cache (false if the camera is not connected).
     bool CameraProp(uint32_t prop, PropState& out) const;
     uint32_t CameraPropsGeneration() const { return propsGen_; }
-    // Última falha ao ajustar a câmera (vazio se não houve); fica disponível por alguns segundos.
-    std::string CameraError() const;
+    // Last failure to change a camera setting (empty if none), in the given language; kept for a few seconds.
+    std::string CameraError(Lang lang) const;
 
 private:
     struct CamCommand {
         uint32_t prop;
-        std::vector<uint32_t> words;  // um valor simples = uma palavra
+        std::vector<uint32_t> words;  // a simple value = one word
         bool structured;
-        std::string label;
+        Str label;
     };
 
     void ProcessLoop();
     void RunCameraCommands();
-    void SetCameraError(const std::string& msg);
+    void SetCameraError(const Msg& msg);
 
     SettingsStore& store_;
     FramePipeline pipeline_;
@@ -87,7 +88,7 @@ private:
     std::atomic<bool> panelOpen_{false};
     std::atomic<bool> chanReady_{false};
 
-    // caixa de correio: o JPEG mais recente, da captura para o processamento
+    // mailbox: the most recent JPEG, from capture to processing
     std::mutex mboxMu_;
     std::vector<uint8_t> mboxJpeg_;
     uint64_t mboxTick_ = 0;
@@ -100,10 +101,10 @@ private:
 
     mutable std::mutex cmdMu_;
     std::deque<CamCommand> cmds_;
-    std::string camError_;
+    Msg camError_;
     uint64_t camErrorTick_ = 0;
 
-    // estado exposto ao painel
+    // state exposed to the panel
     std::atomic<int> state_{int(ProducerState::Idle)};
     std::atomic<bool> camConnected_{false};
     std::atomic<bool> consumer_{false};

@@ -1,13 +1,13 @@
-// Canal de quadros entre eoscam.exe (sessão do usuário, fala com a câmera, processa a imagem na
-// GPU) e eoscam-source.dll (carregada pelo Frame Server, conta LocalService, sessão 0).
+// Frame channel between eoscam.exe (user session, talks to the camera, processes the image on the GPU)
+// and eoscam-source.dll (loaded by the Frame Server, LocalService account, session 0).
 //
-// Layout v2: os slots carregam quadros NV12 1920x1080 já prontos (a v1 mandava JPEGs do Live View).
-// Os nomes do mapeamento/evento terminam em "2" para a v1 instalada e a v2 nunca se confundirem.
+// Layout v2: the slots carry ready-made NV12 1920x1080 frames (v1 sent Live View JPEGs).
+// The mapping/event names end in "2" so an installed v1 and v2 never get mixed up.
 //
-// A memória compartilhada fica no namespace Global\. Criar objetos ali exige
-// SeCreateGlobalPrivilege, que serviços têm e usuários comuns não: por isso a DLL
-// cria e o app apenas abre. O app mantém o handle aberto, então o canal sobrevive
-// enquanto o app estiver rodando, mesmo que o Frame Server descarregue a DLL.
+// The shared memory lives in the Global\ namespace. Creating objects there requires
+// SeCreateGlobalPrivilege, which services have and regular users don't: that is why the DLL
+// creates it and the app only opens it. The app keeps the handle open, so the channel survives
+// while the app is running, even if the Frame Server unloads the DLL.
 #pragma once
 
 #include <windows.h>
@@ -23,8 +23,8 @@ inline constexpr GUID kSourceClsid = {0xd4dfb62f, 0xf0e4, 0x4dd7, {0xa4, 0xaa, 0
 #define EOSCAM_CLSID_STRING L"{D4DFB62F-F0E4-4DD7-A4AA-EDB7F8E013BC}"
 
 inline constexpr wchar_t kCameraName[] = L"Canon EOS Webcam (eoscam)";
-// Com a variável de ambiente EOSCAM_LOCAL=1 o canal usa o namespace Local\ (sessão
-// atual), o que permite testar a fonte dentro de um processo comum, sem o Frame Server.
+// With the environment variable EOSCAM_LOCAL=1 the channel uses the Local\ namespace (current
+// session), which allows testing the source inside a regular process, without the Frame Server.
 inline bool UseLocalNamespace() {
     wchar_t v[8];
     return GetEnvironmentVariableW(L"EOSCAM_LOCAL", v, 8) > 0 && v[0] == L'1';
@@ -37,46 +37,46 @@ inline const wchar_t* EventName() {
 }
 inline constexpr wchar_t kDataDir[] = L"C:\\ProgramData\\EosCam";
 
-// SYSTEM, LocalService, Administradores e usuários autenticados têm acesso total.
+// SYSTEM, LocalService, Administrators and authenticated users have full access.
 inline constexpr wchar_t kSddl[] = L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GA;;;AU)";
 
 constexpr uint32_t kMagic = 0x4D414345;  // "ECAM"
 constexpr uint32_t kLayoutVersion = 2;
 constexpr int kSlotCount = 3;
 
-// Formato único oferecido pela câmera virtual: NV12 1920x1080 (3.110.400 bytes).
+// The single format offered by the virtual camera: NV12 1920x1080 (3,110,400 bytes).
 constexpr uint32_t kFrameWidth = 1920;
 constexpr uint32_t kFrameHeight = 1080;
 constexpr uint32_t kFrameBytes = kFrameWidth * kFrameHeight * 3 / 2;
-constexpr uint32_t kMaxFrameBytes = 4u << 20;  // tamanho máximo do slot
+constexpr uint32_t kMaxFrameBytes = 4u << 20;  // maximum slot size
 constexpr uint32_t kFourccNV12 = 0x3231564E;   // "NV12"
 
-// Consumidor considerado ativo se deu sinal de vida há menos que isso.
+// The consumer counts as active if its last heartbeat is more recent than this.
 constexpr uint64_t kConsumerTimeoutMs = 2500;
-// Produtor considerado vivo se deu sinal de vida há menos que isso.
+// The producer counts as alive if its last heartbeat is more recent than this.
 constexpr uint64_t kProducerTimeoutMs = 3000;
 
 enum class ProducerState : LONG {
     Unknown = 0,
-    Idle = 1,       // app rodando, ninguém usando a webcam
-    Starting = 2,   // ligando o Live View
-    Streaming = 3,  // enviando quadros
-    NoCamera = 4,   // câmera desligada/desconectada/ocupada
+    Idle = 1,       // app running, nobody using the webcam
+    Starting = 2,   // turning Live View on
+    Streaming = 3,  // sending frames
+    NoCamera = 4,   // camera off/disconnected/busy
 };
 
 struct alignas(64) FrameSlot {
-    volatile LONG seq;  // seqlock: ímpar enquanto está sendo escrito
-    uint32_t size;      // bytes válidos em data
+    volatile LONG seq;  // seqlock: odd while being written
+    uint32_t size;      // valid bytes in data
     uint64_t frameNumber;
     uint64_t captureTick;
     uint32_t format;    // kFourccNV12
     uint32_t width;
     uint32_t height;
-    uint32_t stride;    // bytes por linha do plano Y
+    uint32_t stride;    // bytes per row of the Y plane
     uint8_t data[kMaxFrameBytes];
 };
 
-// Cabeçalho de um quadro lido do canal.
+// Header of a frame read from the channel.
 struct FrameMeta {
     uint64_t frameNumber = 0;
     uint64_t captureTick = 0;
@@ -88,12 +88,12 @@ enum class ReadResult { None, Ok, Torn, Incompatible };
 struct alignas(64) SharedHeader {
     uint32_t magic;
     uint32_t layoutVersion;
-    volatile LONG64 consumerTick;  // GetTickCount64 do último sinal da fonte (quer quadros)
-    volatile LONG64 producerTick;  // GetTickCount64 do último sinal do app
+    volatile LONG64 consumerTick;  // GetTickCount64 of the source's last heartbeat (wants frames)
+    volatile LONG64 producerTick;  // GetTickCount64 of the app's last heartbeat
     volatile LONG producerState;   // ProducerState
-    volatile LONG latestSlot;      // -1 = nenhum quadro ainda
-    volatile LONG64 frameNumber;   // incrementa a cada quadro publicado
-    volatile LONG consumerWidth;   // informativo: resolução pedida pelo cliente
+    volatile LONG latestSlot;      // -1 = no frame yet
+    volatile LONG64 frameNumber;   // incremented on every published frame
+    volatile LONG consumerWidth;   // informational: resolution requested by the client
     volatile LONG consumerHeight;
 };
 
@@ -111,8 +111,8 @@ public:
     SharedChannel& operator=(const SharedChannel&) = delete;
     ~SharedChannel() { Close(); }
 
-    // Abre o canal; se não existir e allowCreate, tenta criá-lo.
-    // lastError recebe o código do Windows em caso de falha.
+    // Opens the channel; if it doesn't exist and allowCreate is set, tries to create it.
+    // lastError receives the Windows error code on failure.
     bool Open(bool allowCreate, DWORD* lastError = nullptr) {
         if (frames_) return true;
         HANDLE m = OpenFileMappingW(FILE_MAP_READ | FILE_MAP_WRITE, FALSE, MappingName());
@@ -144,7 +144,7 @@ public:
 
         SharedHeader& h = frames_->header;
         if (h.magic != kMagic || h.layoutVersion != kLayoutVersion) {
-            // memória recém-criada (zerada pelo sistema) ou de versão antiga
+            // freshly created memory (zeroed by the system) or from an old version
             std::memset(&h, 0, sizeof h);
             h.latestSlot = -1;
             h.layoutVersion = kLayoutVersion;
@@ -166,8 +166,8 @@ public:
     SharedHeader& Header() { return frames_->header; }
     HANDLE Event() const { return event_; }
 
-    // ---- lado produtor (app)
-    // Publica um quadro NV12 (w x h, stride = w). Copia para o próximo slot do anel.
+    // ---- producer side (app)
+    // Publishes an NV12 frame (w x h, stride = w). Copies it to the next slot of the ring.
     void PublishNv12(const uint8_t* nv12, uint32_t w, uint32_t h, uint64_t captureTick) {
         uint32_t n = w * h * 3 / 2;
         if (!frames_ || !nv12 || n == 0 || n > kMaxFrameBytes) return;
@@ -175,7 +175,7 @@ public:
         LONG cur = hd.latestSlot;
         int slot = (cur < 0 || cur >= kSlotCount) ? 0 : (cur + 1) % kSlotCount;
         FrameSlot& s = frames_->slots[slot];
-        InterlockedIncrement(&s.seq);  // ímpar: escrevendo
+        InterlockedIncrement(&s.seq);  // odd: writing
         std::memcpy(s.data, nv12, n);
         s.size = n;
         s.format = kFourccNV12;
@@ -184,7 +184,7 @@ public:
         s.stride = w;
         s.frameNumber = uint64_t(hd.frameNumber) + 1;
         s.captureTick = captureTick;
-        InterlockedIncrement(&s.seq);  // par: pronto
+        InterlockedIncrement(&s.seq);  // even: ready
         InterlockedExchange(&hd.latestSlot, slot);
         InterlockedIncrement64(&hd.frameNumber);
         if (event_) SetEvent(event_);
@@ -202,7 +202,7 @@ public:
         return t != 0 && NowTick() - t < kConsumerTimeoutMs;
     }
 
-    // ---- lado consumidor (DLL)
+    // ---- consumer side (DLL)
     void ConsumerHeartbeat(LONG w, LONG h) {
         if (!frames_) return;
         InterlockedExchange64(&frames_->header.consumerTick, LONG64(NowTick()));
@@ -222,8 +222,8 @@ public:
         return frames_ ? ProducerState(frames_->header.producerState) : ProducerState::Unknown;
     }
 
-    // Copia o quadro mais recente para dst (dstBytes bytes) se ele for NV12 expectW x expectH.
-    // Incompatible: o produtor mandou outro formato/tamanho (versões diferentes do eoscam).
+    // Copies the most recent frame to dst (dstBytes bytes) if it is NV12 expectW x expectH.
+    // Incompatible: the producer sent another format/size (different eoscam versions).
     ReadResult ReadLatest(uint8_t* dst, uint32_t dstBytes, uint32_t expectW, uint32_t expectH, FrameMeta& meta) {
         if (!frames_) return ReadResult::None;
         LONG slot = frames_->header.latestSlot;

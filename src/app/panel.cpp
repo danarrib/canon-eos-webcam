@@ -18,8 +18,9 @@
 #include "applog.h"
 #include "autostart.h"
 #include "color.h"
+#include "i18n.h"
 
-// Controles com visual moderno (Common Controls 6) sem precisar de um arquivo de manifesto.
+// Modern-looking controls (Common Controls 6) without needing a manifest file.
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 using Microsoft::WRL::ComPtr;
@@ -39,17 +40,18 @@ enum Id : int {
     ID_CAM_EXP = 150, ID_CAM_ISO, ID_CAM_WB, ID_CAM_KELVIN, ID_CAM_STYLE, ID_CAM_CONTRAST, ID_CAM_SHARP,
     ID_CAM_SAT, ID_CAM_TONE, ID_CAM_ALO, ID_CAM_INFO,
     ID_STATUS = 190, ID_ZOOM = 195, ID_ZOOM_HINT = 196,
-    ID_VALUE_BASE = 300,  // rótulo de valor de um controle deslizante: ID_VALUE_BASE + id
-    ID_LABEL_BASE = 500,  // rótulo de texto de um controle: ID_LABEL_BASE + id
-    ID_NOTE_BASE = 700,   // texto de estado ao lado de um controle: ID_NOTE_BASE + id
+    ID_VALUE_BASE = 300,  // value label of a slider: ID_VALUE_BASE + id
+    ID_LABEL_BASE = 500,  // text label of a control: ID_LABEL_BASE + id
+    ID_NOTE_BASE = 700,   // status text next to a control: ID_NOTE_BASE + id
     ID_TRAY_OPEN = 1, ID_TRAY_AUTOSTART, ID_TRAY_EXIT,
 };
 
-// ---------------------------------------------------------------- tabelas de nomes
+// ---------------------------------------------------------------- name tables
 
-struct NamedValue { uint32_t value; const wchar_t* name; };
+struct NamedValue { uint32_t value; Str name; };
+struct LiteralValue { uint32_t value; const wchar_t* name; };
 
-const NamedValue kIsoNames[] = {
+const LiteralValue kIsoNames[] = {
     {0x0000, L"Auto"}, {0x0001, L"Auto"}, {0x0028, L"6"}, {0x0030, L"12"}, {0x0038, L"25"}, {0x0040, L"50"},
     {0x0043, L"64"}, {0x0045, L"80"}, {0x0048, L"100"}, {0x004B, L"125"}, {0x004D, L"160"}, {0x0050, L"200"},
     {0x0053, L"250"}, {0x0055, L"320"}, {0x0058, L"400"}, {0x005B, L"500"}, {0x005D, L"640"}, {0x0060, L"800"},
@@ -58,27 +60,38 @@ const NamedValue kIsoNames[] = {
     {0x007D, L"10000"}, {0x0080, L"12800"}, {0x0083, L"16000"}, {0x0085, L"20000"}, {0x0088, L"25600"},
 };
 const NamedValue kWbNames[] = {
-    {0, L"Automático"}, {1, L"Luz do dia"}, {8, L"Sombra"}, {2, L"Nublado"}, {3, L"Tungstênio"},
-    {4, L"Fluorescente"}, {5, L"Flash"}, {6, L"Personalizado"}, {9, L"Temperatura de cor (K)"},
-    {10, L"Personalizado PC-1"}, {11, L"Personalizado PC-2"}, {12, L"Personalizado PC-3"},
+    {0, Str::WbAuto}, {1, Str::WbDaylight}, {8, Str::WbShade}, {2, Str::WbCloudy}, {3, Str::WbTungsten},
+    {4, Str::WbFluorescent}, {5, Str::WbFlash}, {6, Str::WbCustom}, {9, Str::WbColorTemp},
+    {10, Str::WbPc1}, {11, Str::WbPc2}, {12, Str::WbPc3},
 };
 const NamedValue kStyleNames[] = {
-    {0x81, L"Padrão"}, {0x82, L"Retrato"}, {0x83, L"Paisagem"}, {0x84, L"Neutro"}, {0x85, L"Fiel"},
-    {0x86, L"Monocromático"}, {0x87, L"Automático"}, {0x88, L"Detalhe fino"}, {0x21, L"Definido pelo usuário 1"},
-    {0x22, L"Definido pelo usuário 2"}, {0x23, L"Definido pelo usuário 3"},
+    {0x81, Str::PsStandard}, {0x82, Str::PsPortrait}, {0x83, Str::PsLandscape}, {0x84, Str::PsNeutral},
+    {0x85, Str::PsFaithful}, {0x86, Str::PsMonochrome}, {0x87, Str::PsAuto}, {0x88, Str::PsFineDetail},
+    {0x21, Str::PsUser1}, {0x22, Str::PsUser2}, {0x23, Str::PsUser3},
 };
-// Auto Lighting Optimizer nos modelos mais simples (T3): 0 padrão, 1 baixa, 2 forte, 3 desativada.
-const NamedValue kAloNames[] = {{0, L"Padrão"}, {1, L"Baixa"}, {2, L"Forte"}, {3, L"Desativada"}};
+// Auto Lighting Optimizer on the simpler models (T3): 0 standard, 1 low, 2 strong, 3 disabled.
+const NamedValue kAloNames[] = {
+    {0, Str::AloStandard}, {1, Str::AloLow}, {2, Str::AloStrong}, {3, Str::AloDisabled}};
 
-template <size_t N>
-std::wstring NameOf(const NamedValue (&t)[N], uint32_t v) {
-    for (auto& e : t) if (e.value == v) return e.name;
+std::wstring HexName(uint32_t v) {
     wchar_t b[32];
     swprintf_s(b, L"0x%X", v);
     return b;
 }
 
-// Compensação de exposição: byte com sinal em 1/8 de EV; a câmera usa 3 e 5 para 1/3 e 2/3.
+template <size_t N>
+std::wstring NameOf(const NamedValue (&t)[N], uint32_t v) {
+    for (auto& e : t) if (e.value == v) return TrW(e.name);
+    return HexName(v);
+}
+
+template <size_t N>
+std::wstring NameOf(const LiteralValue (&t)[N], uint32_t v) {
+    for (auto& e : t) if (e.value == v) return e.name;
+    return HexName(v);
+}
+
+// Exposure compensation: signed byte in 1/8 EV; the camera uses 3 and 5 for 1/3 and 2/3.
 std::wstring ExpCompText(uint32_t raw) {
     int n = int(int8_t(raw & 0xFF));
     int thirds = int(std::lround(n * 3.0 / 8.0));
@@ -119,7 +132,7 @@ std::wstring Widen(const std::string& s) {
     return w;
 }
 
-// Ícone da bandeja desenhado na hora (corpo de câmera com a lente), sem arquivo de recurso.
+// Tray icon drawn on the fly (camera body with the lens), without a resource file.
 HICON MakeAppIcon(int size) {
     BITMAPINFO bi{};
     bi.bmiHeader.biSize = sizeof bi.bmiHeader;
@@ -141,7 +154,7 @@ HICON MakeAppIcon(int size) {
     double s = size / 32.0;
     for (int y = 0; y < size; y++) {
         for (int x = 0; x < size; x++) {
-            double fx = (x + 0.5) / s, fy = (y + 0.5) / s;  // coordenadas em 32x32
+            double fx = (x + 0.5) / s, fy = (y + 0.5) / s;  // coordinates in 32x32
             uint32_t argb = 0;
             bool body = fx >= 2 && fx <= 30 && fy >= 8 && fy <= 28;
             bool bump = fx >= 9 && fx <= 15 && fy >= 4 && fy < 8;
@@ -166,12 +179,12 @@ HICON MakeAppIcon(int size) {
 
 }  // namespace
 
-// ================================================================= implementação
+// ================================================================= implementation
 
 struct PanelApp::Impl {
     Impl(Bridge& b, SettingsStore& s) : bridge(b), store(s) {}
 
-    // ---- infraestrutura
+    // ---- infrastructure
     Bridge& bridge;
     SettingsStore& store;
     DWORD uiThread = 0;
@@ -181,7 +194,7 @@ struct PanelApp::Impl {
     HICON iconBig = nullptr, iconSmall = nullptr;
     UINT taskbarCreated = 0;
     int dpi = 96;
-    bool updating = false;  // true enquanto os controles são preenchidos pelo código (ignora as notificações)
+    bool updating = false;  // true while the code fills in the controls (notifications are ignored)
     uint32_t seenVersion = 0;
     uint32_t seenCamGen = ~0u;
     bool camWasConnected = false;
@@ -189,31 +202,31 @@ struct PanelApp::Impl {
     std::wstring statusTexts[3];
     COLORREF customColors[16] = {};
 
-    // ---- prévia
+    // ---- preview
     RECT previewRc{};
     std::vector<uint8_t> frameNv12, previewBgra;
     bool havePreview = false;
     uint64_t previewFrame = 0;
     RECT swatchRc{};
-    // zoom: 0 = Ajustar, 1..3 = 100%/200%/300% (pixels de tela por pixel de vídeo)
+    // zoom: 0 = Fit, 1..3 = 100%/200%/300% (screen pixels per video pixel)
     int zoom = 0;
-    double viewX = 0, viewY = 0;  // canto superior esquerdo da janela de visão, em coordenadas do vídeo
+    double viewX = 0, viewY = 0;  // top-left corner of the viewport, in video coordinates
     bool dragging = false;
     POINT dragStart{};
     double dragViewX = 0, dragViewY = 0;
     int bufW = 0, bufH = 0;
-    std::vector<int> xb, yb;  // limites da caixa de média por coluna/linha de destino (modo Ajustar)
+    std::vector<int> xb, yb;  // averaging box bounds per destination column/row (Fit mode)
     int perfCount = 0;
     double perfSum = 0, perfMax = 0;
 
-    // ---- estado dos controles da câmera (para reconstruir só quando muda)
+    // ---- state of the camera controls (rebuilt only when it changes)
     std::vector<uint32_t> expList, isoList, wbList, styleList, aloList;
 
     int S(int v) const { return MulDiv(v, dpi, 96); }
 
     HWND Child(int id) const { return GetDlgItem(panel, id); }
 
-    // ---------------------------------------------------------------- criação da janela do painel
+    // ---------------------------------------------------------------- panel window creation
     HWND Make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id,
               DWORD ex = 0) {
         HWND c = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), panel,
@@ -245,105 +258,104 @@ struct PanelApp::Impl {
 
     void BuildControls() {
         const int rowH = 26;
-        // ---- esquerda: prévia (640x360 em x=12,y=12), efeitos de IA e fundo
+        // ---- left: preview (640x360 at x=12,y=12), AI effects and background
         previewRc = {S(12), S(12), S(12 + 640), S(12 + 360)};
 
-        // zoom logo abaixo da prévia
-        Label(ID_ZOOM, L"Zoom:", 12, 378, 44);
+        // zoom right below the preview
+        Label(ID_ZOOM, TrW(Str::ZoomLabel), 12, 378, 44);
         HWND zc = Combo(ID_ZOOM, 58, 378, 100);
-        for (const wchar_t* n : {L"Ajustar", L"100%", L"200%", L"300%"})
+        for (const wchar_t* n : {TrW(Str::ZoomFit), L"100%", L"200%", L"300%"})
             SendMessageW(zc, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(n));
         SendMessageW(zc, CB_SETCURSEL, WPARAM(zoom), 0);
-        Make(L"STATIC", L"Roda do mouse: zoom · arrastar: mover · duplo clique: ajustar", SS_LEFT | SS_NOPREFIX, 168,
-             381, 484, 18, ID_ZOOM_HINT);
+        Make(L"STATIC", TrW(Str::ZoomHint), SS_LEFT | SS_NOPREFIX, 168, 381, 484, 18, ID_ZOOM_HINT);
 
         int gy = 380 + 30;
-        Group(L"Efeitos de IA (GPU, NVIDIA Maxine)", 12, gy, 640, 104);
-        const wchar_t* fxNames[] = {L"Super Resolution 2×", L"Redução de artefatos", L"Redução de ruído"};
+        Group(TrW(Str::GroupEffects), 12, gy, 640, 104);
+        const Str fxNames[] = {Str::FxSuperRes, Str::FxArtifact, Str::FxDenoise};
         const int fxIds[] = {ID_FX_SR, ID_FX_AR, ID_FX_DN};
         for (int i = 0; i < 3; i++) {
             int y = gy + 20 + i * rowH;
-            Label(fxIds[i], fxNames[i], 24, y, 170);
+            Label(fxIds[i], TrW(fxNames[i]), 24, y, 170);
             HWND c = Combo(fxIds[i], 200, y, 150);
-            SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Desligado"));
-            SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Conservador"));
-            SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Agressivo"));
+            for (Str level : {Str::LevelOff, Str::LevelCon, Str::LevelAgg})
+                SendMessageW(c, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TrW(level)));
             Note(fxIds[i], 360, y, 280);
         }
 
         int by = gy + 104 + 8;
-        Group(L"Fundo virtual (AI Green Screen)", 12, by, 640, 134);
-        Make(L"BUTTON", L"Remover o fundo", BS_AUTOCHECKBOX | WS_TABSTOP, 24, by + 20, 170, 22, ID_BG_ENABLE);
+        Group(TrW(Str::GroupBackground), 12, by, 640, 134);
+        Make(L"BUTTON", TrW(Str::BgRemove), BS_AUTOCHECKBOX | WS_TABSTOP, 24, by + 20, 170, 22, ID_BG_ENABLE);
         Note(ID_BG_ENABLE, 200, by + 20, 440);
-        Label(ID_BG_MODE, L"Substituir por", 24, by + 20 + rowH, 170);
+        Label(ID_BG_MODE, TrW(Str::BgReplaceWith), 24, by + 20 + rowH, 170);
         HWND m = Combo(ID_BG_MODE, 200, by + 20 + rowH, 150);
-        SendMessageW(m, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Cor sólida"));
-        SendMessageW(m, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Desfoque"));
-        SendMessageW(m, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(L"Imagem"));
-        Make(L"BUTTON", L"Cor…", BS_PUSHBUTTON | WS_TABSTOP, 360, by + 19 + rowH, 70, 24, ID_BG_COLOR);
+        // same order as BgMode (Solid, Blur, Image)
+        for (Str mode : {Str::BgModeSolid, Str::BgModeBlur, Str::BgModeImage})
+            SendMessageW(m, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(TrW(mode)));
+        Make(L"BUTTON", TrW(Str::BgColorButton), BS_PUSHBUTTON | WS_TABSTOP, 360, by + 19 + rowH, 70, 24, ID_BG_COLOR);
         swatchRc = {S(438), S(by + 22 + rowH), S(438 + 40), S(by + 22 + rowH + 18)};
-        Label(ID_BG_BLUR, L"Intensidade do desfoque", 24, by + 20 + 2 * rowH, 170);
+        Label(ID_BG_BLUR, TrW(Str::BgBlurStrength), 24, by + 20 + 2 * rowH, 170);
         Slider(ID_BG_BLUR, 200, by + 19 + 2 * rowH, 380, 0, 100, 60);
-        Make(L"BUTTON", L"Imagem…", BS_PUSHBUTTON | WS_TABSTOP, 24, by + 19 + 3 * rowH, 100, 24, ID_BG_IMAGE);
+        Make(L"BUTTON", TrW(Str::BgImageButton), BS_PUSHBUTTON | WS_TABSTOP, 24, by + 19 + 3 * rowH, 100, 24,
+             ID_BG_IMAGE);
         Note(ID_BG_IMAGE, 132, by + 19 + 3 * rowH, 508);
 
-        // ---- direita: imagem e câmera
+        // ---- right: image and camera
         int rx = 664, rw = 440;
-        Group(L"Imagem", rx, 12, rw, 20 + 6 * rowH + 38);
-        struct S6 { int id; const wchar_t* label; int lo, hi, def; } img[] = {
-            {ID_IMG_BRIGHT, L"Brilho", -100, 100, 0},   {ID_IMG_CONTRAST, L"Contraste", -100, 100, 0},
-            {ID_IMG_GAMMA, L"Gamma", 50, 200, 100},      {ID_IMG_TEMP, L"Temperatura", -100, 100, 0},
-            {ID_IMG_TINT, L"Tom (verde/magenta)", -100, 100, 0}, {ID_IMG_SAT, L"Saturação", 0, 200, 100}};
+        Group(TrW(Str::GroupImage), rx, 12, rw, 20 + 6 * rowH + 38);
+        struct S6 { int id; Str label; int lo, hi, def; } img[] = {
+            {ID_IMG_BRIGHT, Str::ImgBrightness, -100, 100, 0}, {ID_IMG_CONTRAST, Str::ImgContrast, -100, 100, 0},
+            {ID_IMG_GAMMA, Str::ImgGamma, 50, 200, 100},       {ID_IMG_TEMP, Str::ImgTemperature, -100, 100, 0},
+            {ID_IMG_TINT, Str::ImgTint, -100, 100, 0},         {ID_IMG_SAT, Str::ImgSaturation, 0, 200, 100}};
         for (int i = 0; i < 6; i++) {
             int y = 12 + 20 + i * rowH;
-            Label(img[i].id, img[i].label, rx + 12, y, 118);
+            Label(img[i].id, TrW(img[i].label), rx + 12, y, 118);
             Slider(img[i].id, rx + 130, y - 1, 250, img[i].lo, img[i].hi, img[i].def);
         }
-        Make(L"BUTTON", L"Restaurar padrões", BS_PUSHBUTTON | WS_TABSTOP, rx + 12, 12 + 20 + 6 * rowH + 4, 150, 26,
+        Make(L"BUTTON", TrW(Str::ImgReset), BS_PUSHBUTTON | WS_TABSTOP, rx + 12, 12 + 20 + 6 * rowH + 4, 150, 26,
              ID_IMG_RESET);
 
         int cy = 12 + 20 + 6 * rowH + 38 + 8;
-        Group(L"Câmera (ajustes guardados pela própria câmera)", rx, cy, rw, 20 + 10 * rowH + 6 + 40);
+        Group(TrW(Str::GroupCamera), rx, cy, rw, 20 + 10 * rowH + 6 + 40);
         int y = cy + 20;
         Make(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, rx + 12, y + 1, rw - 24, 18, ID_CAM_INFO);
         y += 22;
-        Label(ID_CAM_EXP, L"Compensação de exposição", rx + 12, y, 170);
+        Label(ID_CAM_EXP, TrW(Str::CamExpComp), rx + 12, y, 170);
         Combo(ID_CAM_EXP, rx + 186, y, 160);
         y += rowH;
-        Label(ID_CAM_ISO, L"ISO", rx + 12, y, 170);
+        Label(ID_CAM_ISO, TrW(Str::CamIso), rx + 12, y, 170);
         Combo(ID_CAM_ISO, rx + 186, y, 160);
         Note(ID_CAM_ISO, rx + 352, y, 80);
         y += rowH;
-        Label(ID_CAM_WB, L"Balanço de branco", rx + 12, y, 170);
+        Label(ID_CAM_WB, TrW(Str::CamWhiteBalance), rx + 12, y, 170);
         Combo(ID_CAM_WB, rx + 186, y, 160);
         y += rowH;
-        Label(ID_CAM_KELVIN, L"Temperatura de cor", rx + 12, y, 170);
+        Label(ID_CAM_KELVIN, TrW(Str::CamColorTemp), rx + 12, y, 170);
         Slider(ID_CAM_KELVIN, rx + 186, y - 1, 190, 2500, 10000, 5200, true, 60);
         y += rowH;
-        Label(ID_CAM_STYLE, L"Picture Style", rx + 12, y, 170);
+        Label(ID_CAM_STYLE, TrW(Str::CamPictureStyle), rx + 12, y, 170);
         Combo(ID_CAM_STYLE, rx + 186, y, 160);
         y += rowH;
-        struct P4 { int id; const wchar_t* label; int lo, hi; } ps[] = {
-            {ID_CAM_CONTRAST, L"  Contraste", -4, 4}, {ID_CAM_SHARP, L"  Nitidez", 0, 7},
-            {ID_CAM_SAT, L"  Saturação", -4, 4}, {ID_CAM_TONE, L"  Tom de cor", -4, 4}};
+        struct P4 { int id; Str label; int lo, hi; } ps[] = {
+            {ID_CAM_CONTRAST, Str::CamPsContrast, -4, 4}, {ID_CAM_SHARP, Str::CamPsSharpness, 0, 7},
+            {ID_CAM_SAT, Str::CamPsSaturation, -4, 4},    {ID_CAM_TONE, Str::CamPsColorTone, -4, 4}};
         for (auto& p : ps) {
-            Label(p.id, p.label, rx + 12, y, 170);
+            Label(p.id, TrW(p.label), rx + 12, y, 170);
             Slider(p.id, rx + 186, y - 1, 190, p.lo, p.hi, 0, true, 60);
             y += rowH;
         }
-        Label(ID_CAM_ALO, L"Auto Lighting Optimizer", rx + 12, y, 170);
+        Label(ID_CAM_ALO, TrW(Str::CamAlo), rx + 12, y, 170);
         Combo(ID_CAM_ALO, rx + 186, y, 160);
         y += rowH + 2;
         Make(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, rx + 12, y, rw - 24, 34, ID_CAM_INFO + 1);
 
-        // ---- rodapé
+        // ---- footer
         HWND sb = CreateWindowExW(0, STATUSCLASSNAMEW, L"", WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, panel,
                                   reinterpret_cast<HMENU>(INT_PTR(ID_STATUS)), inst, nullptr);
         if (sb && font) SendMessageW(sb, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
-        if (sb) SendMessageW(sb, WM_SIZE, 0, 0);  // a barra de estado se posiciona sozinha no rodapé
+        if (sb) SendMessageW(sb, WM_SIZE, 0, 0);  // the status bar positions itself at the bottom
     }
 
-    // Só mexe no controle se o texto mudou (evita piscar a cada atualização do estado).
+    // Only touches the control if the text changed (avoids flicker on every status update).
     void SetText(int id, const std::wstring& t) {
         HWND c = Child(id);
         if (!c) return;
@@ -352,9 +364,7 @@ struct PanelApp::Impl {
         if (t != cur) SetWindowTextW(c, t.c_str());
     }
 
-    // ---------------------------------------------------------------- sincronização controles <-> configurações
-    static const wchar_t* FxText(FxLevel l) { return l == FxLevel::Agg ? L"Agressivo" : l == FxLevel::Con ? L"Conservador" : L"Desligado"; }
-
+    // ---------------------------------------------------------------- controls <-> settings sync
     void SetSlider(int id, int v) {
         SendMessageW(Child(id), TBM_SETPOS, TRUE, v);
         UpdateValueLabel(id);
@@ -402,7 +412,8 @@ struct PanelApp::Impl {
         CheckDlgButton(panel, ID_BG_ENABLE, s.bg.greenScreen ? BST_CHECKED : BST_UNCHECKED);
         SendMessageW(Child(ID_BG_MODE), CB_SETCURSEL, int(s.bg.mode), 0);
         SetSlider(ID_BG_BLUR, s.bg.blur);
-        std::wstring name = s.bg.imagePath.empty() ? L"(nenhuma imagem escolhida)" : PathFindFileNameW(s.bg.imagePath.c_str());
+        std::wstring name =
+            s.bg.imagePath.empty() ? TrW(Str::BgNoImageChosen) : PathFindFileNameW(s.bg.imagePath.c_str());
         SetText(ID_NOTE_BASE + ID_BG_IMAGE, name.c_str());
         UpdateBgEnables(s);
         updating = false;
@@ -425,7 +436,7 @@ struct PanelApp::Impl {
         seenVersion = store.Version();
     }
 
-    // ---------------------------------------------------------------- reações dos controles
+    // ---------------------------------------------------------------- control reactions
     void OnImageSlider(int id) {
         int v = GetSlider(id);
         UpdateValueLabel(id);
@@ -497,9 +508,10 @@ struct PanelApp::Impl {
     void PickImage() {
         ComPtr<IFileOpenDialog> dlg;
         if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) return;
-        COMDLG_FILTERSPEC filters[] = {{L"Imagens (PNG, JPG, BMP)", L"*.png;*.jpg;*.jpeg;*.bmp"}, {L"Todos os arquivos", L"*.*"}};
+        COMDLG_FILTERSPEC filters[] = {{TrW(Str::BgPickFilterImages), L"*.png;*.jpg;*.jpeg;*.bmp"},
+                                       {TrW(Str::BgPickFilterAll), L"*.*"}};
         dlg->SetFileTypes(2, filters);
-        dlg->SetTitle(L"Escolher a imagem de fundo");
+        dlg->SetTitle(TrW(Str::BgPickTitle));
         if (FAILED(dlg->Show(panel))) return;
         ComPtr<IShellItem> item;
         if (FAILED(dlg->GetResult(&item))) return;
@@ -511,7 +523,7 @@ struct PanelApp::Impl {
         SyncFromSettings();
     }
 
-    // ---- câmera
+    // ---- camera
     uint32_t ComboValue(int id) const {
         HWND c = Child(id);
         int sel = int(SendMessageW(c, CB_GETCURSEL, 0, 0));
@@ -523,20 +535,20 @@ struct PanelApp::Impl {
         uint32_t v = ComboValue(id);
         if (v == ~0u) return;
         switch (id) {
-            case ID_CAM_EXP: bridge.SetCameraProp(kPropExpComp, v, "compensação de exposição"); break;
-            case ID_CAM_ISO: bridge.SetCameraProp(kPropISO, v, "ISO"); break;
-            case ID_CAM_WB: bridge.SetCameraProp(kPropWhiteBalance, v, "balanço de branco"); break;
-            case ID_CAM_STYLE: bridge.SetCameraProp(kPropPictureStyle, v, "Picture Style"); break;
-            case ID_CAM_ALO: bridge.SetCameraProp(kPropAlo, v, "Auto Lighting Optimizer"); break;
+            case ID_CAM_EXP: bridge.SetCameraProp(kPropExpComp, v, Str::LabelExpComp); break;
+            case ID_CAM_ISO: bridge.SetCameraProp(kPropISO, v, Str::LabelIso); break;
+            case ID_CAM_WB: bridge.SetCameraProp(kPropWhiteBalance, v, Str::LabelWhiteBalance); break;
+            case ID_CAM_STYLE: bridge.SetCameraProp(kPropPictureStyle, v, Str::LabelPictureStyle); break;
+            case ID_CAM_ALO: bridge.SetCameraProp(kPropAlo, v, Str::LabelAlo); break;
         }
     }
 
     void OnCameraSlider(int id, int code) {
         UpdateValueLabel(id);
-        if (code == TB_THUMBTRACK) return;  // só envia à câmera quando o usuário solta o controle
+        if (code == TB_THUMBTRACK) return;  // only sends to the camera when the user releases the slider
         int v = GetSlider(id);
         if (id == ID_CAM_KELVIN) {
-            bridge.SetCameraProp(kPropColorTemp, uint32_t(v), "temperatura de cor");
+            bridge.SetCameraProp(kPropColorTemp, uint32_t(v), Str::LabelColorTemp);
             return;
         }
         PropState st;
@@ -547,11 +559,11 @@ struct PanelApp::Impl {
         size_t n = ps.raw.size() / 4;
         std::vector<uint32_t> words(n);
         for (size_t i = 0; i < n; i++) words[i] = Word(ps.raw, i);
-        size_t base = (ps.raw.size() == 32) ? 2 : 1;  // estilos do usuário têm uma palavra a mais (estilo base)
+        size_t base = (ps.raw.size() == 32) ? 2 : 1;  // user styles have one extra word (the base style)
         size_t idx = base + (id == ID_CAM_CONTRAST ? 0 : id == ID_CAM_SHARP ? 1 : id == ID_CAM_SAT ? 2 : 3);
         if (idx >= n) return;
         words[idx] = uint32_t(int32_t(v));
-        bridge.SetCameraPropWords(sp, words, "parâmetro do Picture Style");
+        bridge.SetCameraPropWords(sp, words, Str::LabelPsParam);
     }
 
     void FillCombo(int id, const std::vector<uint32_t>& values, std::wstring (*namer)(uint32_t), uint32_t current,
@@ -579,14 +591,14 @@ struct PanelApp::Impl {
         bool conn = bs.cameraConnected;
         std::wstring info;
         if (!conn) {
-            info = L"Câmera desconectada ou desligada: ajustes indisponíveis.";
+            info = TrW(Str::CamDisconnected);
         } else {
-            info = Widen(bs.cameraName) + L" (só os ajustes que o modo atual permite)";
+            info = Widen(bs.cameraName) + TrW(Str::CamModeHint);
         }
         SetText(ID_CAM_INFO, info.c_str());
 
         PropState p;
-        // compensação de exposição
+        // exposure compensation
         bool has = conn && bridge.CameraProp(kPropExpComp, p) && p.hasList && !p.list.empty();
         if (has) FillCombo(ID_CAM_EXP, p.list, NameExp, p.value, p.hasValue);
         else SendMessageW(Child(ID_CAM_EXP), CB_RESETCONTENT, 0, 0);
@@ -598,24 +610,24 @@ struct PanelApp::Impl {
         EnableCtl(ID_CAM_ISO, has);
         if (conn && !has) {
             bool aut = bridge.CameraProp(kPropISO, p) && p.hasValue;
-            SetText(ID_NOTE_BASE + ID_CAM_ISO, aut ? L"(automático)" : L"");
+            SetText(ID_NOTE_BASE + ID_CAM_ISO, aut ? TrW(Str::CamIsoAuto) : L"");
         } else {
             SetText(ID_NOTE_BASE + ID_CAM_ISO, L"");
         }
-        // balanço de branco
+        // white balance
         PropState wb;
         has = conn && bridge.CameraProp(kPropWhiteBalance, wb) && wb.hasList && !wb.list.empty();
         if (has) FillCombo(ID_CAM_WB, wb.list, NameWb, wb.value, wb.hasValue);
         else SendMessageW(Child(ID_CAM_WB), CB_RESETCONTENT, 0, 0);
         EnableCtl(ID_CAM_WB, has);
-        // temperatura de cor (Kelvin): só se a câmera oferece o modo "temperatura de cor" (valor 9)
+        // color temperature (Kelvin): only if the camera offers the "color temperature" mode (value 9)
         bool kelvinOk = has && std::find(wb.list.begin(), wb.list.end(), 9u) != wb.list.end();
         PropState kt;
         bool haveK = kelvinOk && bridge.CameraProp(kPropColorTemp, kt) && kt.hasValue;
         if (haveK) SetSlider(ID_CAM_KELVIN, int(std::min<uint32_t>(10000, std::max<uint32_t>(2500, kt.value))));
         EnableCtl(ID_CAM_KELVIN, kelvinOk && wb.hasValue && wb.value == 9);
-        if (!kelvinOk) SetText(ID_VALUE_BASE + ID_CAM_KELVIN, conn ? L"n/d" : L"");
-        // Picture Style e seus parâmetros
+        if (!kelvinOk) SetText(ID_VALUE_BASE + ID_CAM_KELVIN, conn ? TrW(Str::NotAvailable) : L"");
+        // Picture Style and its parameters
         PropState st;
         has = conn && bridge.CameraProp(kPropPictureStyle, st) && st.hasList && !st.list.empty();
         if (has) {
@@ -636,10 +648,10 @@ struct PanelApp::Impl {
                 size_t base = (sp.raw.size() == 32) ? 2 : 1;
                 if (base + size_t(i) < sp.raw.size() / 4) SetSlider(pids[i], int(int32_t(Word(sp.raw, base + size_t(i)))));
             } else {
-                SetText(ID_VALUE_BASE + pids[i], conn ? L"n/d" : L"");
+                SetText(ID_VALUE_BASE + pids[i], conn ? TrW(Str::NotAvailable) : L"");
             }
         }
-        // Auto Lighting Optimizer (só se a câmera informa o valor; o modelo informa 0..3)
+        // Auto Lighting Optimizer (only if the camera reports the value; this model reports 0..3)
         has = conn && bridge.CameraProp(kPropAlo, p) && p.hasValue && p.value < 0x100;
         if (has) {
             std::vector<uint32_t> vals = {0, 1, 2, 3};
@@ -651,7 +663,7 @@ struct PanelApp::Impl {
         updating = false;
     }
 
-    // ---------------------------------------------------------------- estado e prévia
+    // ---------------------------------------------------------------- status and preview
     void UpdateStatus(const BridgeStatus& bs) {
         HWND sb = Child(ID_STATUS);
         RECT rc;
@@ -660,23 +672,23 @@ struct PanelApp::Impl {
         int parts[] = {w * 40 / 100, w * 72 / 100, -1};
         SendMessageW(sb, WM_SIZE, 0, 0);
         SendMessageW(sb, SB_SETPARTS, 3, reinterpret_cast<LPARAM>(parts));
-        std::wstring st;
+        Str st;
         switch (bs.state) {
-            case ProducerState::Streaming: st = bs.fpsIn > 0.5 ? L"ao vivo" : L"ligando o Live View"; break;
-            case ProducerState::Starting: st = L"ligando a câmera"; break;
-            case ProducerState::NoCamera: st = L"sem câmera (ligada? USB?)"; break;
-            case ProducerState::Idle: st = L"aguardando"; break;
-            default: st = L"parada"; break;
+            case ProducerState::Streaming: st = bs.fpsIn > 0.5 ? Str::StatusLive : Str::StatusStartingLiveView; break;
+            case ProducerState::Starting: st = Str::StatusStartingCamera; break;
+            case ProducerState::NoCamera: st = Str::StatusNoCamera; break;
+            case ProducerState::Idle: st = Str::StatusIdle; break;
+            default: st = Str::StatusStopped; break;
         }
-        std::wstring t0 = L"Ponte: " + st;
+        std::wstring t0 = std::wstring(TrW(Str::StatusBridge)) + TrW(st);
         if (bs.cameraConnected && !bs.cameraName.empty()) t0 += L"  |  " + Widen(bs.cameraName);
         wchar_t b[200];
-        swprintf_s(b, L"Entrada %.1f fps  |  saída %.1f fps", bs.fpsIn, bs.fpsOut);
+        swprintf_s(b, TrW(Str::StatusFps), bs.fpsIn, bs.fpsOut);
         std::wstring t1 = b;
         const PipelineStats& ps = bs.pipeline;
         double gpu = ps.msUpload + ps.msDenoise + ps.msArtifact + ps.msSuperRes + ps.msSegment + ps.msDownload;
         double cpu = ps.msDecode + ps.msFinal;
-        swprintf_s(b, L"Processamento %.1f ms/quadro (GPU %.1f, CPU %.1f)", ps.msTotal, gpu, cpu);
+        swprintf_s(b, TrW(Str::StatusProcessing), ps.msTotal, gpu, cpu);
         std::wstring t2 = b;
         const std::wstring* texts[] = {&t0, &t1, &t2};
         for (int i = 0; i < 3; i++) {
@@ -685,26 +697,26 @@ struct PanelApp::Impl {
             SendMessageW(sb, SB_SETTEXTW, WPARAM(i), reinterpret_cast<LPARAM>(texts[i]->c_str()));
         }
 
-        // estado de cada efeito
+        // state of each effect
         auto fx = [&](int id, const FxInfo& i) {
-            std::wstring t = Widen(i.text);
+            std::wstring t = Widen(FxText(i));
             SetText(ID_NOTE_BASE + id, t.c_str());
         };
         bool maxine = ps.maxineAvailable;
         for (int id : {ID_FX_SR, ID_FX_AR, ID_FX_DN}) EnableCtl(id, maxine);
         if (!maxine) {
-            std::wstring why = L"indisponível: " + Widen(ps.maxineReason);
+            std::wstring why = TrW(Str::UnavailablePrefix) + Widen(Text(ps.maxineReason));
             for (int id : {ID_FX_SR, ID_FX_AR, ID_FX_DN}) SetText(ID_NOTE_BASE + id, why.c_str());
             SetText(ID_NOTE_BASE + ID_BG_ENABLE, why.c_str());
         } else {
             fx(ID_FX_SR, ps.superRes);
             fx(ID_FX_AR, ps.artifact);
             fx(ID_FX_DN, ps.denoise);
-            std::wstring g = Widen(ps.greenScreen.text);
-            if (!ps.backgroundNote.empty()) g += L"  —  " + Widen(ps.backgroundNote);
+            std::wstring g = Widen(FxText(ps.greenScreen));
+            if (!ps.backgroundNote.empty()) g += L"  —  " + Widen(Text(ps.backgroundNote));
             SetText(ID_NOTE_BASE + ID_BG_ENABLE, g.c_str());
         }
-        std::string err = bridge.CameraError();
+        std::string err = bridge.CameraError(CurrentLang());
         if (err != lastCamErr) {
             lastCamErr = err;
             SetText(ID_CAM_INFO + 1, Widen(err).c_str());
@@ -722,7 +734,7 @@ struct PanelApp::Impl {
         RenderPreview();
     }
 
-    // Limites [0, n] divididos em w partes iguais (caixas de média do modo Ajustar).
+    // Bounds of [0, n] split into w equal parts (averaging boxes of the Fit mode).
     static void FillBounds(std::vector<int>& b, int w, int n) {
         b.resize(size_t(w) + 1);
         for (int i = 0; i <= w; i++) b[size_t(i)] = int(int64_t(i) * n / w);
@@ -736,7 +748,7 @@ struct PanelApp::Impl {
         o[3] = 255;
     }
 
-    // Monta o buffer BGRA exatamente do tamanho da área da prévia (pixels de tela), para ser copiado 1:1.
+    // Builds the BGRA buffer at exactly the size of the preview area (screen pixels), to be copied 1:1.
     void RenderPreview() {
         if (!havePreview || frameNv12.size() < size_t(1920) * 1080 * 3 / 2) return;
         LARGE_INTEGER t0, t1, fq;
@@ -744,7 +756,7 @@ struct PanelApp::Impl {
         const int W = 1920, H = 1080;
         int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
         if (w <= 0 || h <= 0) return;
-        if (w != bufW || h != bufH) {  // só realoca quando o tamanho muda
+        if (w != bufW || h != bufH) {  // only reallocates when the size changes
             bufW = w;
             bufH = h;
             previewBgra.resize(size_t(w) * h * 4);
@@ -754,7 +766,7 @@ struct PanelApp::Impl {
         const uint8_t* yp = frameNv12.data();
         const uint8_t* uv = yp + size_t(W) * H;
         if (zoom == 0) {
-            // média por área (filtro de caixa) em Y e na crominância
+            // area average (box filter) on Y and on the chroma
             for (int y = 0; y < h; y++) {
                 int sy0 = yb[size_t(y)], sy1 = std::max(sy0 + 1, yb[size_t(y) + 1]);
                 int cy0 = sy0 >> 1, cy1 = std::min(H / 2, std::max(cy0 + 1, (sy1 + 1) >> 1));
@@ -780,7 +792,7 @@ struct PanelApp::Impl {
                 }
             }
         } else {
-            // vizinho mais próximo: pixels nítidos para inspecionar detalhes
+            // nearest neighbor: sharp pixels for inspecting details
             int ox, oy;
             ViewOrigin(ox, oy);
             for (int y = 0; y < h; y++) {
@@ -800,20 +812,20 @@ struct PanelApp::Impl {
         double ms = double(t1.QuadPart - t0.QuadPart) * 1000.0 / double(fq.QuadPart);
         perfSum += ms;
         perfMax = std::max(perfMax, ms);
-        if (++perfCount == 60) {  // medição única: custo médio/máximo de 60 atualizações
-            Log("prévia %dx%d (zoom %d): média %.2f ms, máximo %.2f ms por atualização", w, h, zoom, perfSum / 60,
+        if (++perfCount == 60) {  // one-off measurement: average/maximum cost of 60 updates
+            Log("preview %dx%d (zoom %d): average %.2f ms, maximum %.2f ms per update", w, h, zoom, perfSum / 60,
                 perfMax);
         }
     }
 
-    // Tamanho da janela de visão (em pixels do vídeo) para o zoom atual.
+    // Viewport size (in video pixels) for the current zoom.
     void ViewSize(int& vw, int& vh) const {
         int w = previewRc.right - previewRc.left, h = previewRc.bottom - previewRc.top;
         vw = std::min(1920, (w + zoom - 1) / zoom);
         vh = std::min(1080, (h + zoom - 1) / zoom);
     }
 
-    // Origem da janela de visão, limitada para nunca sair da imagem.
+    // Viewport origin, clamped so it never leaves the image.
     void ViewOrigin(int& ox, int& oy) {
         int vw, vh;
         ViewSize(vw, vh);
@@ -823,7 +835,7 @@ struct PanelApp::Impl {
         oy = int(viewY);
     }
 
-    // Muda o nível de zoom mantendo fixo o ponto da imagem sob (cx, cy), em coordenadas de cliente.
+    // Changes the zoom level keeping the image point under (cx, cy), in client coordinates, fixed.
     void SetZoom(int level, int cx, int cy) {
         level = std::clamp(level, 0, 3);
         if (level != zoom) {
@@ -864,7 +876,7 @@ struct PanelApp::Impl {
             bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32;
             bi.bmiHeader.biCompression = BI_RGB;
-            // cópia 1:1 (o buffer já está no tamanho da tela)
+            // 1:1 copy (the buffer already has the screen size)
             SetDIBitsToDevice(dc, previewRc.left, previewRc.top, DWORD(bufW), DWORD(bufH), 0, 0, 0, UINT(bufH),
                               previewBgra.data(), &bi, DIB_RGB_COLORS);
         } else {
@@ -875,7 +887,7 @@ struct PanelApp::Impl {
             SetTextColor(dc, RGB(190, 195, 202));
             HGDIOBJ old = SelectObject(dc, font);
             RECT t = previewRc;
-            DrawTextW(dc, L"Aguardando imagem da câmera...", -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            DrawTextW(dc, TrW(Str::WaitingForCamera), -1, &t, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             SelectObject(dc, old);
         }
         FrameRect(dc, &previewRc, static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
@@ -889,11 +901,11 @@ struct PanelApp::Impl {
         FrameRect(dc, &swatchRc, static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
     }
 
-    // ---------------------------------------------------------------- ciclo de vida do painel
+    // ---------------------------------------------------------------- panel life cycle
     void ShowPanel() {
         if (!panel) CreatePanel();
         if (!panel) return;
-        // EOSCAM_PANEL_NOACTIVATE=1 (testes automatizados): mostra a janela sem roubar o foco
+        // EOSCAM_PANEL_NOACTIVATE=1 (automated tests): shows the window without stealing the focus
         wchar_t na[4];
         bool noActivate = GetEnvironmentVariableW(L"EOSCAM_PANEL_NOACTIVATE", na, 4) > 0 && na[0] == L'1';
         if (noActivate) {
@@ -918,7 +930,7 @@ struct PanelApp::Impl {
         KillTimer(panel, kTimerPreview);
         KillTimer(panel, kTimerStatus);
         ShowWindow(panel, SW_HIDE);
-        bridge.SetPanelOpen(false);  // volta à regra normal: o Live View desliga 5 s depois de ninguém usar
+        bridge.SetPanelOpen(false);  // back to the normal rule: Live View turns off 5 s after nobody uses it
     }
 
     void CreatePanel() {
@@ -934,7 +946,7 @@ struct PanelApp::Impl {
         int x = s.ui.x, y = s.ui.y;
         if (x < -2000 || y < -2000 || x > 20000 || y > 20000) x = y = CW_USEDEFAULT;
         if (x == -1 && y == -1) x = y = CW_USEDEFAULT;
-        panel = CreateWindowExW(0, kPanelClass, L"eoscam — painel de controle", style, x, y, rc.right - rc.left,
+        panel = CreateWindowExW(0, kPanelClass, TrW(Str::PanelTitle), style, x, y, rc.right - rc.left,
                                 rc.bottom - rc.top, nullptr, nullptr, inst, this);
         if (!panel) return;
         if (iconBig) SendMessageW(panel, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(iconBig));
@@ -943,7 +955,7 @@ struct PanelApp::Impl {
         SyncFromSettings();
     }
 
-    // ---------------------------------------------------------------- procedimentos de janela
+    // ---------------------------------------------------------------- window procedures
     static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         Impl* d = reinterpret_cast<Impl*>(GetWindowLongPtrW(h, GWLP_USERDATA));
         if (m == WM_NCCREATE) {
@@ -972,7 +984,7 @@ struct PanelApp::Impl {
                 if (code == CBN_SELCHANGE) {
                     if (id == ID_ZOOM) {
                         int w0 = previewRc.right - previewRc.left, h0 = previewRc.bottom - previewRc.top;
-                        // zoom pelo combo: mantém o centro da prévia fixo
+                        // zoom through the combo box: keeps the center of the preview fixed
                         SetZoom(int(SendMessageW(Child(ID_ZOOM), CB_GETCURSEL, 0, 0)), previewRc.left + w0 / 2,
                                 previewRc.top + h0 / 2);
                     } else if (id == ID_FX_SR || id == ID_FX_AR || id == ID_FX_DN) OnFxCombo(id);
@@ -1056,7 +1068,7 @@ struct PanelApp::Impl {
                 EndPaint(h, &ps);
                 return 0;
             }
-            case WM_PRINTCLIENT:  // PrintWindow: captura de tela do painel
+            case WM_PRINTCLIENT:  // PrintWindow: screenshot of the panel
                 PaintPreview(reinterpret_cast<HDC>(w));
                 PaintSwatch(reinterpret_cast<HDC>(w));
                 return 0;
@@ -1082,8 +1094,8 @@ struct PanelApp::Impl {
         return DefWindowProcW(h, m, w, l);
     }
 
-    // Duplo clique num controle deslizante o devolve ao valor padrão (o controle do Windows não repassa o
-    // WM_LBUTTONDBLCLK, então o duplo clique é detectado pelo intervalo entre dois cliques).
+    // Double-clicking a slider resets it to its default value (the Windows control does not forward
+    // WM_LBUTTONDBLCLK, so the double click is detected from the interval between two clicks).
     static LRESULT CALLBACK TrackProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref) {
         static DWORD lastTick = 0;
         static UINT_PTR lastId = 0;
@@ -1124,7 +1136,7 @@ struct PanelApp::Impl {
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = kMsgTray;
         nid.hIcon = iconSmall;
-        wcscpy_s(nid.szTip, L"eoscam — Canon EOS como webcam");
+        wcscpy_s(nid.szTip, TrW(Str::TrayTip));
         Shell_NotifyIconW(NIM_ADD, &nid);
     }
     void RemoveTrayIcon() {
@@ -1136,14 +1148,15 @@ struct PanelApp::Impl {
 
     void TrayMenu() {
         HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, L"Abrir painel");
-        AppendMenuW(menu, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART, L"Iniciar com o Windows");
+        AppendMenuW(menu, MF_STRING, ID_TRAY_OPEN, TrW(Str::TrayOpen));
+        AppendMenuW(menu, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0), ID_TRAY_AUTOSTART,
+                    TrW(Str::TrayAutostart));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, L"Sair");
+        AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, TrW(Str::TrayExit));
         SetMenuDefaultItem(menu, ID_TRAY_OPEN, FALSE);
         POINT pt;
         GetCursorPos(&pt);
-        SetForegroundWindow(trayWnd);  // necessário para o menu fechar ao clicar fora
+        SetForegroundWindow(trayWnd);  // needed for the menu to close when clicking outside it
         UINT cmd = UINT(TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, trayWnd, nullptr));
         DestroyMenu(menu);
         PostMessageW(trayWnd, WM_NULL, 0, 0);
@@ -1151,9 +1164,9 @@ struct PanelApp::Impl {
             ShowPanel();
         } else if (cmd == ID_TRAY_AUTOSTART) {
             LSTATUS r = SetAutostart(!AutostartEnabled());
-            if (r != ERROR_SUCCESS) Log("não consegui alterar \"Iniciar com o Windows\" (erro %ld)", (long)r);
+            if (r != ERROR_SUCCESS) Log("couldn't change \"Start with Windows\" (error %ld)", (long)r);
         } else if (cmd == ID_TRAY_EXIT) {
-            Log("Saindo pelo menu da bandeja.");
+            Log("Exiting from the tray menu.");
             bridge.RequestStop();
             PostQuitMessage(0);
         }
@@ -1172,7 +1185,7 @@ struct PanelApp::Impl {
             ShowPanel();
             return 0;
         }
-        if (m == taskbarCreated && taskbarCreated) {  // o Explorer reiniciou: recoloca o ícone
+        if (m == taskbarCreated && taskbarCreated) {  // Explorer restarted: add the icon again
             AddTrayIcon();
             return 0;
         }
@@ -1206,7 +1219,7 @@ int PanelApp::Run() {
     wc.lpszClassName = kBridgeWindowClass;
     RegisterClassExW(&wc);
     WNDCLASSEXW pc{sizeof pc};
-    pc.style = CS_DBLCLKS;  // duplo clique na prévia volta ao modo Ajustar
+    pc.style = CS_DBLCLKS;  // double-clicking the preview goes back to Fit mode
     pc.lpfnWndProc = Impl::PanelProc;
     pc.hInstance = d.inst;
     pc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -1216,15 +1229,15 @@ int PanelApp::Run() {
     pc.hIconSm = d.iconSmall;
     RegisterClassExW(&pc);
 
-    // janela oculta (de nível superior, para o "eoscam panel" achá-la com FindWindow) que recebe a bandeja
+    // hidden window (top-level, so "eoscam panel" finds it with FindWindow) that receives the tray messages
     d.trayWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kBridgeWindowClass, L"eoscam", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
                                 d.inst, &d);
     if (!d.trayWnd) {
-        Log("painel: não consegui criar a janela da bandeja (erro %lu)", GetLastError());
+        Log("panel: couldn't create the tray window (error %lu)", GetLastError());
         return 1;
     }
     d.AddTrayIcon();
-    Log("Painel: ícone na bandeja criado (\"eoscam panel\" abre a janela).");
+    Log("Panel: tray icon created (\"eoscam panel\" opens the window).");
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {

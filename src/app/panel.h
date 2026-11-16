@@ -1,4 +1,4 @@
-// Ícone na bandeja e painel de controle (só no eoscam-bg.exe). Janela Win32 nativa, sem dependências.
+// Tray icon and control panel (eoscam-bg.exe only). Native Win32 window, no dependencies.
 #pragma once
 
 #include <windows.h>
@@ -10,9 +10,9 @@
 
 namespace eoscam {
 
-// Classe da janela oculta que recebe os cliques da bandeja e as mensagens do "eoscam panel".
+// Class of the hidden window that receives the tray clicks and the "eoscam panel" messages.
 inline constexpr wchar_t kBridgeWindowClass[] = L"EosCamBridgeWindow";
-// Mensagem que "eoscam panel" envia para a janela oculta: abre (ou traz para frente) o painel.
+// Message that "eoscam panel" sends to the hidden window: opens the panel (or brings it to the front).
 inline constexpr UINT kMsgOpenPanel = WM_APP + 1;
 
 class PanelApp {
@@ -22,9 +22,9 @@ public:
     PanelApp(const PanelApp&) = delete;
     PanelApp& operator=(const PanelApp&) = delete;
 
-    // Cria a janela oculta e o ícone da bandeja e roda o laço de mensagens até sair.
+    // Creates the hidden window and the tray icon and runs the message loop until exit.
     int Run();
-    // De qualquer thread: encerra o laço de mensagens.
+    // From any thread: ends the message loop.
     void RequestQuit();
 
 private:

@@ -1,5 +1,5 @@
-// Conversões BGRA <-> NV12 (BT.601, faixa limitada 16-235), usadas pela fonte de
-// vídeo e pela ferramenta de teste.
+// BGRA <-> NV12 conversions (BT.601, limited range 16-235), used by the video source and by the
+// test tools.
 #pragma once
 
 #include <cstdint>
@@ -8,7 +8,7 @@ namespace eoscam {
 
 inline uint8_t Clamp8(int v) { return uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
-// w e h precisam ser pares. nv12 deve ter w*h*3/2 bytes.
+// w and h must be even. nv12 must have w*h*3/2 bytes.
 inline void BgraToNv12(const uint8_t* bgra, int stride, int w, int h, uint8_t* nv12) {
     uint8_t* yPlane = nv12;
     uint8_t* uvPlane = nv12 + size_t(w) * h;

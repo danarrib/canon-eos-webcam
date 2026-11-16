@@ -1,4 +1,4 @@
-// "Iniciar com o Windows": valor EosCam em HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
+// "Start with Windows": the EosCam value in HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
 #pragma once
 
 #include <windows.h>
@@ -9,7 +9,7 @@ namespace eoscam {
 
 inline constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 
-// Pasta do executável atual, com a barra final.
+// Folder of the current executable, with the trailing backslash.
 inline std::wstring ExeDirectory() {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -22,7 +22,7 @@ inline bool AutostartEnabled() {
            ERROR_SUCCESS;
 }
 
-// Liga/desliga a inicialização do eoscam-bg com o Windows. Devolve o código de erro do registro (0 = ok).
+// Turns starting eoscam-bg with Windows on/off. Returns the registry error code (0 = ok).
 inline LSTATUS SetAutostart(bool on) {
     if (on) {
         std::wstring value = L"\"" + ExeDirectory() + L"eoscam-bg.exe\"";

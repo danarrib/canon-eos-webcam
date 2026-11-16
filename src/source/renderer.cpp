@@ -16,7 +16,7 @@ HRESULT FrameRenderer::Init(UINT width, UINT height) {
 
 void FrameRenderer::RenderMessage(const std::wstring& title, const std::wstring& detail) {
     std::wstring key = title + L"\n" + detail;
-    if (key == lastMessage_ || !w_ || !h_) return;  // já renderizado
+    if (key == lastMessage_ || !w_ || !h_) return;  // already rendered
     lastMessage_ = key;
 
     BITMAPINFO bi{};

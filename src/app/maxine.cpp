@@ -7,8 +7,8 @@
 #include "applog.h"
 #include "nvCVImage.h"
 
-// O proxy do SDK (third_party/maxine/src/NVVideoEffectsProxy.cpp) consulta esta variável para saber
-// de onde carregar NVVideoEffects.dll. Preenchida em MaxineRuntime::Init().
+// The SDK proxy (third_party/maxine/src/NVVideoEffectsProxy.cpp) reads this variable to know where to
+// load NVVideoEffects.dll from. Filled in by MaxineRuntime::Init().
 char* g_nvVFXSDKPath = nullptr;
 
 namespace eoscam {
@@ -18,7 +18,7 @@ namespace {
 std::mutex g_initMutex;
 bool g_initDone = false;
 bool g_available = false;
-std::string g_reason = "o runtime do NVIDIA Maxine ainda não foi inicializado";
+Msg g_reason{Str::MaxineNotInitialized};
 std::string g_version, g_modelDir;
 CUstream g_stream = nullptr;
 
@@ -54,9 +54,9 @@ std::string St(const char* what, NvCV_Status s) { return std::string(what) + ": 
         }                                           \
     } while (0)
 
-// Pasta com NVVideoEffects.dll: NV_VIDEO_EFFECTS_PATH, se definida (e diferente de USE_APP_PATH);
-// senão o caminho padrão do instalador.
-bool LocateRuntime(std::wstring& dir, std::string& why) {
+// Folder with NVVideoEffects.dll: NV_VIDEO_EFFECTS_PATH, if set (and not USE_APP_PATH); otherwise the
+// installer's default path.
+bool LocateRuntime(std::wstring& dir, Msg& why) {
     wchar_t env[MAX_PATH] = {};
     DWORD n = GetEnvironmentVariableW(L"NV_VIDEO_EFFECTS_PATH", env, MAX_PATH);
     if (n > 0 && n < MAX_PATH && wcscmp(env, L"USE_APP_PATH") != 0) {
@@ -68,28 +68,28 @@ bool LocateRuntime(std::wstring& dir, std::string& why) {
     }
     while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
     if (!FileExists(dir + L"\\NVVideoEffects.dll")) {
-        why = "runtime do NVIDIA Video Effects não encontrado em " + Utf8(dir);
+        why = Msg(Str::MaxineNotFound, Utf8(dir));
         return false;
     }
     return true;
 }
 
-// Faz o CUDA bloquear (dormir) em vez de girar em laço enquanto espera a GPU. O padrão do CUDA
-// (cudaDeviceScheduleAuto) vira "spin" quando há núcleos de sobra, e o SDK do Maxine espera cada estágio de
-// forma síncrona: a thread ficava 100% ocupada durante todo o tempo de GPU. O flag precisa ser definido
-// ANTES de o contexto primário ser criado e no mesmo cudart que o Maxine usa (o da pasta do runtime; o
-// Windows reaproveita o módulo já carregado quando NVVideoEffects.dll pede o mesmo arquivo).
-// Não depende do CUDA Toolkit: só duas funções de cudart64_12.dll, com protótipos declarados aqui.
+// Makes CUDA block (sleep) instead of spinning while it waits for the GPU. The CUDA default
+// (cudaDeviceScheduleAuto) becomes "spin" when there are spare cores, and the Maxine SDK waits for each stage
+// synchronously: the thread stayed 100% busy for the whole GPU time. The flag must be set BEFORE the primary
+// context is created, and in the same cudart that Maxine uses (the one in the runtime folder; Windows reuses
+// the already loaded module when NVVideoEffects.dll asks for the same file).
+// Does not depend on the CUDA Toolkit: only two functions of cudart64_12.dll, with prototypes declared here.
 void ConfigureCudaBlocking(const std::wstring& dir) {
     wchar_t v[8];
     if (GetEnvironmentVariableW(L"EOSCAM_CUDA_SPIN", v, 8) > 0 && v[0] == L'1') {
-        Log("cuda: espera ativa (spin) mantida por EOSCAM_CUDA_SPIN=1");
+        Log("cuda: busy waiting (spin) kept because of EOSCAM_CUDA_SPIN=1");
         return;
     }
     HMODULE rt = LoadLibraryExW((dir + L"\\cudart64_12.dll").c_str(), nullptr,
                                 LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!rt) {
-        Log("cuda: não consegui carregar cudart64_12.dll (erro %lu); espera padrão", GetLastError());
+        Log("cuda: couldn't load cudart64_12.dll (error %lu); default waiting", GetLastError());
         return;
     }
     using SetFlagsFn = int(__cdecl*)(unsigned int);
@@ -97,7 +97,7 @@ void ConfigureCudaBlocking(const std::wstring& dir) {
     auto setFlags = reinterpret_cast<SetFlagsFn>(GetProcAddress(rt, "cudaSetDeviceFlags"));
     auto getFlags = reinterpret_cast<GetFlagsFn>(GetProcAddress(rt, "cudaGetDeviceFlags"));
     if (!setFlags || !getFlags) {
-        Log("cuda: cudaSetDeviceFlags indisponível; espera padrão");
+        Log("cuda: cudaSetDeviceFlags unavailable; default waiting");
         return;
     }
     constexpr unsigned int kScheduleBlockingSync = 0x04;  // cudaDeviceScheduleBlockingSync
@@ -105,8 +105,8 @@ void ConfigureCudaBlocking(const std::wstring& dir) {
     int r = setFlags(kScheduleBlockingSync);
     unsigned int f = 0;
     int r2 = getFlags(&f);
-    Log("cuda: cudaSetDeviceFlags(BlockingSync) -> %d; flags efetivos 0x%X (%s)", r, f,
-        r2 == 0 && (f & kScheduleMask) == kScheduleBlockingSync ? "espera bloqueante" : "NÃO aplicado");
+    Log("cuda: cudaSetDeviceFlags(BlockingSync) -> %d; effective flags 0x%X (%s)", r, f,
+        r2 == 0 && (f & kScheduleMask) == kScheduleBlockingSync ? "blocking wait" : "NOT applied");
 }
 
 }  // namespace
@@ -137,7 +137,7 @@ std::string NvStatusText(NvCV_Status s) {
         case NVCV_ERR_CONFIG: name = "NVCV_ERR_CONFIG"; break;
         case NVCV_ERR_CUDA_MEMORY: name = "NVCV_ERR_CUDA_MEMORY"; break;
         case NVCV_ERR_CUDA_VALUE: name = "NVCV_ERR_CUDA_VALUE"; break;
-        default: name = "erro"; break;
+        default: name = "error"; break;
     }
     char b[64];
     snprintf(b, sizeof b, "%s (%d)", name, int(s));
@@ -152,13 +152,13 @@ bool MaxineRuntime::Init() {
     g_initDone = true;
 
     std::wstring dir;
-    std::string why;
+    Msg why;
     if (!LocateRuntime(dir, why)) {
         g_reason = why;
         return false;
     }
-    // O proxy do SDK usa SetDllDirectory(g_nvVFXSDKPath): as dependências (cudart, nvinfer, npp...)
-    // ficam na mesma pasta que NVVideoEffects.dll.
+    // The SDK proxy uses SetDllDirectory(g_nvVFXSDKPath): the dependencies (cudart, nvinfer, npp...)
+    // live in the same folder as NVVideoEffects.dll.
     static std::string path = Narrow(dir);
     g_nvVFXSDKPath = path.data();
     SetDllDirectoryW(dir.c_str());
@@ -169,7 +169,7 @@ bool MaxineRuntime::Init() {
     unsigned int ver = 0;
     NvCV_Status s = NvVFX_GetVersion(&ver);
     if (s != NVCV_SUCCESS) {
-        g_reason = "não consegui carregar NVVideoEffects.dll (" + NvStatusText(s) + ")";
+        g_reason = Msg(Str::MaxineDllFailed, NvStatusText(s));
         return false;
     }
     char vb[32];
@@ -178,16 +178,16 @@ bool MaxineRuntime::Init() {
 
     s = NvVFX_CudaStreamCreate(&g_stream);
     if (s != NVCV_SUCCESS) {
-        g_reason = "não consegui criar o stream CUDA (" + NvStatusText(s) + "); GPU NVIDIA ou driver ausente?";
+        g_reason = Msg(Str::MaxineCudaFailed, NvStatusText(s));
         return false;
     }
     g_available = true;
-    g_reason.clear();
+    g_reason = {};
     return true;
 }
 
 bool MaxineRuntime::Available() { return g_initDone && g_available; }
-const std::string& MaxineRuntime::Reason() { return g_reason; }
+const Msg& MaxineRuntime::Reason() { return g_reason; }
 const std::string& MaxineRuntime::Version() { return g_version; }
 const std::string& MaxineRuntime::ModelDir() { return g_modelDir; }
 CUstream MaxineRuntime::Stream() { return g_stream; }
@@ -199,18 +199,18 @@ PixelEffect::~PixelEffect() {
         if (state_) NvVFX_DeallocateState(fx_, state_);
         NvVFX_DestroyEffect(fx_);
     }
-    // in_, out_, stateBuf_ liberam seus buffers nos destrutores
+    // in_, out_, stateBuf_ release their buffers in their destructors
 }
 
 bool PixelEffect::Create(Kind kind, int mode, unsigned w, unsigned h, std::string& err) {
     if (!MaxineRuntime::Available()) {
-        err = "Maxine indisponível";
+        err = "Maxine unavailable";
         return false;
     }
-    // Medido neste runtime: com largura ou altura que não seja múltipla de 8 o Denoise "roda" mas devolve
-    // a imagem toda preta; por isso o pipeline entrega a ele uma região alinhada (ver FramePipeline).
+    // Measured on this runtime: with a width or height that is not a multiple of 8, Denoise "runs" but returns
+    // an all-black image; that is why the pipeline hands it an aligned region (see FramePipeline).
     if (kind == Kind::Denoise && ((w | h) & 7)) {
-        err = "o Denoise exige largura e altura múltiplas de 8";
+        err = "Denoise requires a width and height that are multiples of 8";
         return false;
     }
     kind_ = kind;
@@ -226,10 +226,10 @@ bool PixelEffect::Create(Kind kind, int mode, unsigned w, unsigned h, std::strin
     NV_TRY(NvVFX_CreateEffect(sel, &fx_), "CreateEffect");
     NV_TRY(NvVFX_SetString(fx_, NVVFX_MODEL_DIRECTORY, MaxineRuntime::ModelDir().c_str()), "ModelDir");
     NV_TRY(NvVFX_SetCudaStream(fx_, NVVFX_CUDA_STREAM, MaxineRuntime::Stream()), "CudaStream");
-    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_F32, NVCV_PLANAR, NVCV_GPU, 1), "Alloc(entrada)");
-    NV_TRY(NvCVImage_Alloc(&out_, outW_, outH_, NVCV_BGR, NVCV_F32, NVCV_PLANAR, NVCV_GPU, 1), "Alloc(saída)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE, &in_), "SetImage(entrada)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(saída)");
+    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_F32, NVCV_PLANAR, NVCV_GPU, 1), "Alloc(input)");
+    NV_TRY(NvCVImage_Alloc(&out_, outW_, outH_, NVCV_BGR, NVCV_F32, NVCV_PLANAR, NVCV_GPU, 1), "Alloc(output)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE, &in_), "SetImage(input)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(output)");
     if (kind == Kind::Denoise) {
         NV_TRY(NvVFX_SetF32(fx_, NVVFX_STRENGTH, mode ? 1.0f : 0.0f), "Strength");
         NV_TRY(NvVFX_GetU32(fx_, NVVFX_STATE_SIZE, &stateBytes_), "StateSize");
@@ -239,8 +239,8 @@ bool PixelEffect::Create(Kind kind, int mode, unsigned w, unsigned h, std::strin
     NV_TRY(NvVFX_Load(fx_), "Load");
 
     if (kind == Kind::Denoise) {
-        // Estado temporal na GPU, sem cudaMalloc: primeiro tenta a API de objetos de estado do SDK;
-        // se o runtime não aceitar para o Denoise, usa um buffer GPU alocado por NvCVImage_Alloc.
+        // Temporal state on the GPU, without cudaMalloc: first tries the SDK state-object API; if the runtime
+        // does not accept it for Denoise, uses a GPU buffer allocated by NvCVImage_Alloc.
         NvCV_Status s = NvVFX_AllocateState(fx_, &state_);
         if (s == NVCV_SUCCESS && state_) {
             s = NvVFX_SetStateObjectHandleArray(fx_, NVVFX_STATE, &state_);
@@ -253,9 +253,9 @@ bool PixelEffect::Create(Kind kind, int mode, unsigned w, unsigned h, std::strin
         }
         if (!state_) {
             NV_TRY(NvCVImage_Alloc(&stateBuf_, stateBytes_, 1, NVCV_Y, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1),
-                   "Alloc(estado)");
+                   "Alloc(state)");
             stateArray_[0] = stateBuf_.pixels;
-            NV_TRY(NvVFX_SetObject(fx_, NVVFX_STATE, stateArray_), "SetObject(estado)");
+            NV_TRY(NvVFX_SetObject(fx_, NVVFX_STATE, stateArray_), "SetObject(state)");
             ResetState();
         }
     }
@@ -267,7 +267,7 @@ void PixelEffect::ResetState() {
     if (state_) {
         NvVFX_ResetState(fx_, state_);
     } else if (stateBuf_.pixels) {
-        // zera pela cópia de uma imagem CPU zerada de mesmo formato
+        // zeroes it by copying a zeroed CPU image of the same format
         NvCVImage zero;
         if (NvCVImage_Alloc(&zero, stateBuf_.width, 1, NVCV_Y, NVCV_U8, NVCV_CHUNKY, NVCV_CPU, 1) == NVCV_SUCCESS) {
             std::memset(zero.pixels, 0, size_t(zero.pitch) * zero.height);
@@ -292,7 +292,7 @@ Segmenter::~Segmenter() {
 
 bool Segmenter::Create(int mode, unsigned w, unsigned h, std::string& err) {
     if (!MaxineRuntime::Available()) {
-        err = "Maxine indisponível";
+        err = "Maxine unavailable";
         return false;
     }
     mode_ = mode;
@@ -305,10 +305,10 @@ bool Segmenter::Create(int mode, unsigned w, unsigned h, std::string& err) {
     NV_TRY(NvVFX_SetU32(fx_, NVVFX_MAX_INPUT_WIDTH, w), "MaxInputWidth");
     NV_TRY(NvVFX_SetU32(fx_, NVVFX_MAX_INPUT_HEIGHT, h), "MaxInputHeight");
     NV_TRY(NvVFX_SetU32(fx_, NVVFX_MAX_NUMBER_STREAMS, 1), "MaxNumberStreams");
-    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(entrada)");
-    NV_TRY(NvCVImage_Alloc(&out_, w, h, NVCV_A, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(máscara)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE, &in_), "SetImage(entrada)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(saída)");
+    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(input)");
+    NV_TRY(NvCVImage_Alloc(&out_, w, h, NVCV_A, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(mask)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE, &in_), "SetImage(input)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(output)");
     NV_TRY(NvVFX_Load(fx_), "Load");
     NV_TRY(NvVFX_AllocateState(fx_, &state_), "AllocateState");
     batch_[0] = state_;
@@ -333,19 +333,19 @@ BgBlurEffect::~BgBlurEffect() {
 
 bool BgBlurEffect::Create(unsigned w, unsigned h, std::string& err) {
     if (!MaxineRuntime::Available()) {
-        err = "Maxine indisponível";
+        err = "Maxine unavailable";
         return false;
     }
     w_ = w;
     h_ = h;
     NV_TRY(NvVFX_CreateEffect(NVVFX_FX_BGBLUR, &fx_), "CreateEffect(BackgroundBlur)");
     NV_TRY(NvVFX_SetCudaStream(fx_, NVVFX_CUDA_STREAM, MaxineRuntime::Stream()), "CudaStream");
-    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(entrada)");
-    NV_TRY(NvCVImage_Alloc(&mask_, w, h, NVCV_A, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(máscara)");
-    NV_TRY(NvCVImage_Alloc(&out_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(saída)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE_0, &in_), "SetImage(entrada)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE_1, &mask_), "SetImage(máscara)");
-    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(saída)");
+    NV_TRY(NvCVImage_Alloc(&in_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(input)");
+    NV_TRY(NvCVImage_Alloc(&mask_, w, h, NVCV_A, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(mask)");
+    NV_TRY(NvCVImage_Alloc(&out_, w, h, NVCV_BGR, NVCV_U8, NVCV_CHUNKY, NVCV_GPU, 1), "Alloc(output)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE_0, &in_), "SetImage(input)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_INPUT_IMAGE_1, &mask_), "SetImage(mask)");
+    NV_TRY(NvVFX_SetImage(fx_, NVVFX_OUTPUT_IMAGE, &out_), "SetImage(output)");
     return true;
 }
 

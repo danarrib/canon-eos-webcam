@@ -1,11 +1,11 @@
-// eosprobe — mede o Live View de câmeras Canon EOS via PTP, usando apenas o
-// driver WPD/MTP padrão do Windows (nenhum driver adicional).
+// eosprobe — measures the Live View of Canon EOS cameras over PTP, using only the standard Windows
+// WPD/MTP driver (no additional driver).
 //
-// Sequência PTP (mesma usada pelo libgphoto2 para EOS):
+// PTP sequence (the same one libgphoto2 uses for EOS):
 //   SetRemoteMode(1) -> SetEventMode(1) -> GetEvent
 //   SetDevicePropValueEx(EVFOutputDevice = 2 /*PC*/)
-//   loop: GetViewFinderData -> blocos [u32 tamanho][u32 tipo][payload], tipo 1 = JPEG
-//   ao sair: EVFOutputDevice = 0, SetEventMode(0), SetRemoteMode(0)
+//   loop: GetViewFinderData -> blocks [u32 size][u32 type][payload], type 1 = JPEG
+//   on exit: EVFOutputDevice = 0, SetEventMode(0), SetRemoteMode(0)
 
 #include <windows.h>
 #include <objbase.h>
@@ -29,7 +29,7 @@ using Microsoft::WRL::ComPtr;
 static std::atomic<bool> g_stop{false};
 static bool g_verbose = false;
 
-// ---------------------------------------------------------------- utilidades
+// ---------------------------------------------------------------- utilities
 
 static std::string W2U(const wchar_t* w) {
     if (!w) return {};
@@ -61,7 +61,7 @@ struct SysTimes { double idle = 0, total = 0; };
 static SysTimes SystemTimes() {
     FILETIME i, k, u;
     GetSystemTimes(&i, &k, &u);
-    return {FtSec(i), FtSec(k) + FtSec(u)};  // kernel inclui idle
+    return {FtSec(i), FtSec(k) + FtSec(u)};  // kernel includes idle
 }
 
 static uint32_t Rd32(const std::vector<BYTE>& d, size_t i) {
@@ -286,7 +286,7 @@ static bool Step(const char* name, const PtpResult& r) {
     bool ok = r.ok();
     if (g_verbose || !ok)
         printf("  %-36s hr=0x%08lX resp=0x%04lX  %s\n", name, (unsigned long)r.hr, (unsigned long)r.code,
-               ok ? "OK" : "FALHOU");
+               ok ? "OK" : "FAILED");
     return ok;
 }
 
@@ -390,7 +390,7 @@ static bool ParseJpeg(const BYTE* d, size_t n, JpegInfo& ji) {
                     ji.sampling = b;
                 }
             } else if (ji.comps == 1) {
-                ji.sampling = "tons de cinza";
+                ji.sampling = "grayscale";
             }
             return true;
         }
@@ -399,7 +399,7 @@ static bool ParseJpeg(const BYTE* d, size_t n, JpegInfo& ji) {
     return false;
 }
 
-// Separa os blocos de GetViewFinderData e localiza o JPEG (bloco tipo 1).
+// Splits the GetViewFinderData blocks and finds the JPEG (block type 1).
 static bool ExtractJpeg(const std::vector<BYTE>& d, size_t& off, size_t& len, std::vector<uint32_t>* types) {
     bool found = false;
     size_t i = 0;
@@ -414,7 +414,7 @@ static bool ExtractJpeg(const std::vector<BYTE>& d, size_t& off, size_t& len, st
         }
         i += sz;
     }
-    if (!found) {  // formato inesperado: procura SOI/EOI diretamente
+    if (!found) {  // unexpected format: look for SOI/EOI directly
         for (size_t k = 0; k + 1 < d.size(); k++) {
             if (d[k] == 0xFF && d[k + 1] == 0xD8) {
                 off = k;
@@ -429,7 +429,7 @@ static bool ExtractJpeg(const std::vector<BYTE>& d, size_t& off, size_t& len, st
     return found;
 }
 
-// Tempo médio (ms) para decodificar o JPEG em BGRA com o WIC (decodificador do Windows).
+// Average time (ms) to decode the JPEG to BGRA with WIC (the Windows decoder).
 static double BenchDecode(const std::vector<BYTE>& jpg, int iters) {
     ComPtr<IWICImagingFactory> f;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f)))) return -1;
@@ -458,7 +458,7 @@ static double BenchDecode(const std::vector<BYTE>& jpg, int iters) {
     return ok ? (Now() - t0) / ok * 1000.0 : -1;
 }
 
-// ---------------------------------------------------------------- dispositivo
+// ---------------------------------------------------------------- device
 
 struct WpdDevice {
     std::wstring id;
@@ -505,11 +505,11 @@ static BOOL WINAPI CtrlHandler(DWORD) {
 
 static void Usage() {
     printf(
-        "uso: eosprobe [--seconds N] [--out PASTA] [--device TEXTO] [--verbose]\n"
-        "  --seconds N    duração da medição (padrão 10)\n"
-        "  --out PASTA    onde salvar os quadros de exemplo (padrão .\\eosprobe-out)\n"
-        "  --device TEXTO escolhe o dispositivo WPD cujo nome contenha TEXTO (padrão: Canon/EOS)\n"
-        "  --verbose      mostra cada comando PTP\n");
+        "usage: eosprobe [--seconds N] [--out FOLDER] [--device TEXT] [--verbose]\n"
+        "  --seconds N    length of the measurement (default 10)\n"
+        "  --out FOLDER   where to save the sample frames (default .\\eosprobe-out)\n"
+        "  --device TEXT  picks the WPD device whose name contains TEXT (default: Canon/EOS)\n"
+        "  --verbose      shows every PTP command\n");
 }
 
 // ---------------------------------------------------------------- main
@@ -529,12 +529,12 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (seconds <= 0) seconds = 10;
 
-    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) { printf("CoInitializeEx falhou\n"); return 1; }
+    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) { printf("CoInitializeEx failed\n"); return 1; }
     SetConsoleCtrlHandler(CtrlHandler, TRUE);
 
-    // 1. Localiza a câmera
+    // 1. Find the camera
     auto devs = ListDevices();
-    printf("Dispositivos WPD encontrados: %zu\n", devs.size());
+    printf("WPD devices found: %zu\n", devs.size());
     const WpdDevice* sel = nullptr;
     for (auto& d : devs) {
         bool match = devFilter.empty() ? (ContainsI(d.manufacturer, "canon") || ContainsI(d.name, "eos"))
@@ -542,12 +542,12 @@ int wmain(int argc, wchar_t** argv) {
         printf("  %s %s (%s)\n", match && !sel ? "->" : "  ", d.name.c_str(), d.manufacturer.c_str());
         if (match && !sel) sel = &d;
     }
-    if (!sel) { printf("\nNenhuma câmera Canon encontrada. Ela está ligada e conectada?\n"); return 1; }
+    if (!sel) { printf("\nNo Canon camera found. Is it turned on and connected?\n"); return 1; }
 
     PtpDevice cam;
     HRESULT hr = cam.Open(sel->id);
     if (FAILED(hr)) {
-        printf("\nFalha ao abrir o dispositivo (hr=0x%08lX). Feche outros programas que usem a câmera.\n", (unsigned long)hr);
+        printf("\nFailed to open the device (hr=0x%08lX). Close other programs that use the camera.\n", (unsigned long)hr);
         return 1;
     }
 
@@ -556,8 +556,8 @@ int wmain(int argc, wchar_t** argv) {
     auto rdi = cam.Read(PTP_OC_GetDeviceInfo);
     bool haveInfo = Step("GetDeviceInfo", rdi) && ParseDeviceInfo(rdi.data, di);
     if (haveInfo) {
-        printf("\nCâmera: %s %s  (firmware %s)\n", di.manufacturer.c_str(), di.model.c_str(), di.version.c_str());
-        printf("  Operações PTP suportadas: %zu, propriedades: %zu\n", di.ops.size(), di.props.size());
+        printf("\nCamera: %s %s  (firmware %s)\n", di.manufacturer.c_str(), di.model.c_str(), di.version.c_str());
+        printf("  Supported PTP operations: %zu, properties: %zu\n", di.ops.size(), di.props.size());
         struct { uint16_t op; const char* name; } need[] = {
             {PTP_OC_CANON_EOS_SetRemoteMode, "SetRemoteMode"},
             {PTP_OC_CANON_EOS_SetEventMode, "SetEventMode"},
@@ -567,8 +567,8 @@ int wmain(int argc, wchar_t** argv) {
         for (auto& n : need) printf("  0x%04X %-22s %s\n", n.op, n.name, di.has(n.op) ? "sim" : "NÃO");
     }
 
-    // 3. Inicia o Live View para o PC
-    printf("\nIniciando Live View...\n");
+    // 3. Start Live View to the PC
+    printf("\nStarting Live View...\n");
     Step("SetRemoteMode(1)", cam.Exec(PTP_OC_CANON_EOS_SetRemoteMode, {1}));
     Step("SetEventMode(1)", cam.Exec(PTP_OC_CANON_EOS_SetEventMode, {1}));
     auto ev = cam.Read(PTP_OC_CANON_EOS_GetEvent);
@@ -576,12 +576,12 @@ int wmain(int argc, wchar_t** argv) {
     if (g_verbose) printf("  (GetEvent: %zu bytes)\n", ev.data.size());
     {
         auto r = SetPropEx(cam, PTP_DPC_CANON_EOS_EVFMode, 1);
-        if (g_verbose) Step("EVFMode = 1 (opcional)", r);
+        if (g_verbose) Step("EVFMode = 1 (optional)", r);
     }
     Step("EVFOutputDevice = 2 (PC)", SetPropEx(cam, PTP_DPC_CANON_EOS_EVFOutputDevice, 2));
 
     auto stopLiveView = [&] {
-        printf("\nEncerrando Live View...\n");
+        printf("\nStopping Live View...\n");
         Step("EVFOutputDevice = 0", SetPropEx(cam, PTP_DPC_CANON_EOS_EVFOutputDevice, 0));
         Step("SetEventMode(0)", cam.Exec(PTP_OC_CANON_EOS_SetEventMode, {0}));
         Step("SetRemoteMode(0)", cam.Exec(PTP_OC_CANON_EOS_SetRemoteMode, {0}));
@@ -589,7 +589,7 @@ int wmain(int argc, wchar_t** argv) {
         CoUninitialize();
     };
 
-    // 4. Espera o primeiro quadro
+    // 4. Wait for the first frame
     std::vector<BYTE> firstJpeg;
     std::vector<uint32_t> blockTypes;
     PtpResult last;
@@ -606,23 +606,23 @@ int wmain(int argc, wchar_t** argv) {
         if (Now() - tWait > 3.0 && int((Now() - tWait) * 10) % 10 == 0) cam.Read(PTP_OC_CANON_EOS_GetEvent);
     }
     if (firstJpeg.empty()) {
-        printf("\nNão recebi nenhum quadro de Live View (última resposta hr=0x%08lX resp=0x%04lX).\n",
+        printf("\nNo Live View frame received (last response hr=0x%08lX resp=0x%04lX).\n",
                (unsigned long)last.hr, (unsigned long)last.code);
-        printf("Verifique: modo de foto (P/Av/Tv/M, não o modo automático/vídeo), Live View habilitado no menu,\n"
-               "nenhum outro programa usando a câmera. Rode com --verbose para detalhes.\n");
+        printf("Check: photo mode (P/Av/Tv/M, not the automatic/movie mode), Live View enabled in the menu,\n"
+               "no other program using the camera. Run with --verbose for details.\n");
         stopLiveView();
         return 1;
     }
-    printf("Primeiro quadro recebido em %.0f ms.\n", (Now() - tWait) * 1000);
+    printf("First frame received after %.0f ms.\n", (Now() - tWait) * 1000);
 
     JpegInfo ji;
     ParseJpeg(firstJpeg.data(), firstJpeg.size(), ji);
     CreateDirectoryW(outDir.c_str(), nullptr);
-    SaveFile(outDir + L"\\primeiro.jpg", firstJpeg.data(), firstJpeg.size());
-    SaveFile(outDir + L"\\evf-bruto.bin", last.data.data(), last.data.size());
+    SaveFile(outDir + L"\\first.jpg", firstJpeg.data(), firstJpeg.size());
+    SaveFile(outDir + L"\\evf-raw.bin", last.data.data(), last.data.size());
 
-    // 5. Medição
-    printf("Medindo por %.0f s (Ctrl+C para parar antes)...\n", seconds);
+    // 5. Measurement
+    printf("Measuring for %.0f s (Ctrl+C to stop earlier)...\n", seconds);
     size_t calls = 0, okFrames = 0, distinct = 0, notReady = 0, busy = 0, errors = 0, consecErrors = 0;
     double latSum = 0, latMin = 1e9, latMax = 0;
     size_t bytesSum = 0, jpgSum = 0, jpgMin = SIZE_MAX, jpgMax = 0;
@@ -645,7 +645,7 @@ int wmain(int argc, wchar_t** argv) {
             else {
                 errors++;
                 if (g_verbose) Step("GetViewFinderData", r);
-                if (++consecErrors > 50) { printf("Muitos erros seguidos, abortando.\n"); break; }
+                if (++consecErrors > 50) { printf("Too many errors in a row, aborting.\n"); break; }
             }
             continue;
         }
@@ -666,13 +666,13 @@ int wmain(int argc, wchar_t** argv) {
         if (ParseJpeg(r.data.data() + off, len, fji)) sizesSeen[{fji.w, fji.h}]++;
         lastJpeg.assign(r.data.begin() + off, r.data.begin() + off + len);
 
-        if (Now() - lastEvent > 1.0) {  // mantém a fila de eventos da câmera vazia
+        if (Now() - lastEvent > 1.0) {  // keeps the camera event queue empty
             cam.Read(PTP_OC_CANON_EOS_GetEvent);
             lastEvent = Now();
         }
         if (Now() - tPrint > 1.0) {
             double el = Now() - t0;
-            printf("\r  %4.1f s  quadros distintos: %zu (%.1f fps)   ", el, distinct, distinct / el);
+            printf("\r  %4.1f s  distinct frames: %zu (%.1f fps)   ", el, distinct, distinct / el);
             fflush(stdout);
             tPrint = Now();
         }
@@ -682,44 +682,44 @@ int wmain(int argc, wchar_t** argv) {
     SysTimes sys1 = SystemTimes();
     printf("\n");
 
-    if (!lastJpeg.empty()) SaveFile(outDir + L"\\ultimo.jpg", lastJpeg.data(), lastJpeg.size());
+    if (!lastJpeg.empty()) SaveFile(outDir + L"\\last.jpg", lastJpeg.data(), lastJpeg.size());
     double decMs = BenchDecode(firstJpeg, 100);
 
     stopLiveView();
 
-    // 6. Relatório
+    // 6. Report
     int ncpu = int(GetActiveProcessorCount(ALL_PROCESSOR_GROUPS));
     double sysTotal = sys1.total - sys0.total, sysIdle = sys1.idle - sys0.idle;
     double sysBusy = sysTotal > 0 ? (sysTotal - sysIdle) / sysTotal * 100 : 0;
 
-    printf("\n================ RESULTADO ================\n");
-    if (haveInfo) printf("Câmera ............... %s (fw %s)\n", di.model.c_str(), di.version.c_str());
-    printf("Resolução do Live View %d x %d", ji.w, ji.h);
-    if (!ji.sampling.empty()) printf("  (JPEG %s%s)", ji.sampling.c_str(), ji.progressive ? ", progressivo" : "");
+    printf("\n================= RESULT =================\n");
+    if (haveInfo) printf("Camera ............... %s (fw %s)\n", di.model.c_str(), di.version.c_str());
+    printf("Live View resolution . %d x %d", ji.w, ji.h);
+    if (!ji.sampling.empty()) printf("  (JPEG %s%s)", ji.sampling.c_str(), ji.progressive ? ", progressive" : "");
     printf("\n");
     if (sizesSeen.size() > 1) {
-        printf("  (resoluções diferentes vistas durante a medição:");
+        printf("  (different resolutions seen during the measurement:");
         for (auto& [k, v] : sizesSeen) printf(" %dx%d×%zu", k.first, k.second, v);
         printf(")\n");
     }
-    printf("Blocos no pacote EVF . ");
-    for (auto t : blockTypes) printf("tipo %u  ", t);
+    printf("Blocks in EVF packet . ");
+    for (auto t : blockTypes) printf("type %u  ", t);
     printf("\n");
     if (okFrames) {
-        printf("Tamanho do JPEG ...... média %.1f KB  (mín %.1f, máx %.1f)\n", jpgSum / 1024.0 / okFrames,
+        printf("JPEG size ............ average %.1f KB  (min %.1f, max %.1f)\n", jpgSum / 1024.0 / okFrames,
                jpgMin / 1024.0, jpgMax / 1024.0);
-        printf("Latência por pedido .. média %.1f ms  (mín %.1f, máx %.1f)\n", latSum / okFrames * 1000,
+        printf("Latency per request .. average %.1f ms  (min %.1f, max %.1f)\n", latSum / okFrames * 1000,
                latMin * 1000, latMax * 1000);
     }
-    printf("Pedidos .............. %zu em %.1f s  (ok %zu, não-pronto %zu, ocupado %zu, erro %zu)\n", calls, elapsed,
+    printf("Requests ............. %zu in %.1f s  (ok %zu, not-ready %zu, busy %zu, error %zu)\n", calls, elapsed,
            okFrames, notReady, busy, errors);
-    printf("Quadros distintos .... %zu  =>  %.1f fps reais\n", distinct, distinct / elapsed);
-    printf("Taxa USB útil ........ %.2f MB/s\n", bytesSum / elapsed / 1048576.0);
-    printf("CPU deste processo ... %.1f%% de um núcleo (%.2f%% do total de %d núcleos lógicos)\n",
+    printf("Distinct frames ...... %zu  =>  %.1f real fps\n", distinct, distinct / elapsed);
+    printf("Useful USB rate ...... %.2f MB/s\n", bytesSum / elapsed / 1048576.0);
+    printf("CPU of this process .. %.1f%% of a core (%.2f%% of the total of %d logical cores)\n",
            cpuProc / elapsed * 100, cpuProc / elapsed * 100 / ncpu, ncpu);
-    printf("CPU do sistema todo .. %.1f%% (inclui o host do driver WPD e tudo mais que estiver rodando)\n", sysBusy);
+    printf("Whole-system CPU ..... %.1f%% (includes the WPD driver host and everything else running)\n", sysBusy);
     if (decMs >= 0)
-        printf("Decodificação (WIC) .. %.2f ms por quadro => %.1f%% de um núcleo a 30 fps\n", decMs, decMs * 30 / 10);
-    printf("Quadros salvos em .... %s\\ (primeiro.jpg, ultimo.jpg, evf-bruto.bin)\n", W2U(outDir.c_str()).c_str());
+        printf("Decoding (WIC) ....... %.2f ms per frame => %.1f%% of a core at 30 fps\n", decMs, decMs * 30 / 10);
+    printf("Frames saved in ...... %s\\ (first.jpg, last.jpg, evf-raw.bin)\n", W2U(outDir.c_str()).c_str());
     return 0;
 }

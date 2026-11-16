@@ -1,11 +1,13 @@
-// eoscam.exe — ponte entre a Canon EOS (PTP/WPD) e a câmera virtual do Windows 11.
+// eoscam.exe — bridge between the Canon EOS (PTP/WPD) and the Windows 11 virtual camera.
 //
-//   eoscam run         fica rodando: liga o Live View só quando algum programa usa a webcam
-//   eoscam panel       abre o painel de controle (do eoscam-bg em execução; inicia-o se preciso)
-//   eoscam install     cria a câmera virtual "Canon EOS Webcam (eoscam)" (persistente)
-//   eoscam uninstall   remove a câmera virtual
-//   eoscam test        abre a câmera virtual como um app comum e mede quadros/s e CPU
-//   eoscam process     processa um JPEG pelo pipeline de imagem (sem câmera) e mede os tempos
+//   eoscam run         keeps running: turns Live View on only when some program uses the webcam
+//   eoscam panel       opens the control panel (of the running eoscam-bg; starts it if needed)
+//   eoscam install     creates the virtual camera "Canon EOS Webcam (eoscam)" (persistent)
+//   eoscam uninstall   removes the virtual camera
+//   eoscam test        opens the virtual camera like a regular app and measures frames/s and CPU
+//   eoscam process     runs a JPEG through the image pipeline (no camera) and measures the timings
+//
+// Logs and diagnostic output are in English; the everyday commands speak the user's language (i18n.h).
 
 #include <windows.h>
 #include <mfapi.h>
@@ -26,6 +28,7 @@
 #include "bridge.h"
 #include "canon_camera.h"
 #include "color.h"
+#include "i18n.h"
 #include "panel.h"
 #include "pipeline.h"
 #include "settings.h"
@@ -54,29 +57,29 @@ static double FtSec(const FILETIME& f) { return double((ULONGLONG(f.dwHighDateTi
 // =====================================================================================
 // run
 
-// Só um produtor por vez (eoscam run ou eoscam-bg), senão os dois brigam pela câmera.
+// Only one producer at a time (eoscam run or eoscam-bg), otherwise both fight over the camera.
 static bool AcquireSingleInstance(HANDLE& single, HANDLE& stopEvent) {
     single = CreateMutexW(nullptr, TRUE, L"Local\\EosCamProducer");
     if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
-        Out("Outra instância do eoscam já está rodando (use \"eoscam stop\" para encerrá-la).");
+        Out("%s", Tr(Str::CliOtherInstance));
         CloseHandle(single);
         single = nullptr;
         return false;
     }
-    // "eoscam stop" sinaliza este evento para encerrar com o Live View desligado corretamente.
+    // "eoscam stop" signals this event to shut down with Live View properly turned off.
     stopEvent = CreateEventW(nullptr, TRUE, FALSE, L"Local\\EosCamStop");
     if (stopEvent) ResetEvent(stopEvent);
     return true;
 }
 
-// withUi: no eoscam-bg a thread principal roda o ícone da bandeja e o painel, e a ponte numa thread própria.
+// withUi: in eoscam-bg the main thread runs the tray icon and the panel, and the bridge gets its own thread.
 static int CmdRun(bool withUi) {
     HANDLE single = nullptr, stopEvent = nullptr;
     if (!AcquireSingleInstance(single, stopEvent)) return 1;
 
     SettingsStore store;
     store.Load(SettingsStore::DefaultPath());
-    Out("Configurações em %S", store.Path().c_str());
+    Out("Settings in %S", store.Path().c_str());
     Bridge bridge(store);
 
     int rc = 0;
@@ -86,7 +89,7 @@ static int CmdRun(bool withUi) {
         PanelApp app(bridge, store);
         std::thread worker([&] {
             bridge.Run(stopEvent, &g_stop);
-            app.RequestQuit();  // "eoscam stop", Ctrl+C ou "Sair" no menu: fecha a janela também
+            app.RequestQuit();  // "eoscam stop", Ctrl+C or "Exit" in the menu: closes the window too
         });
         rc = app.Run();
         bridge.RequestStop();
@@ -99,7 +102,7 @@ static int CmdRun(bool withUi) {
 }
 
 // =====================================================================================
-// start / stop / autostart (versão em segundo plano: eoscam-bg.exe)
+// start / stop / autostart (background version: eoscam-bg.exe)
 
 static std::wstring ExeDir() {
     wchar_t path[MAX_PATH];
@@ -116,29 +119,29 @@ static bool BackgroundRunning() {
 }
 
 static int CmdStart() {
-    if (BackgroundRunning()) { printf("O eoscam já está rodando.\n"); return 0; }
+    if (BackgroundRunning()) { printf("%s", Tr(Str::CliAlreadyRunning)); return 0; }
     std::wstring exe = ExeDir() + L"eoscam-bg.exe";
     std::wstring cmdline = L"\"" + exe + L"\"";
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
     if (!CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, FALSE, DETACHED_PROCESS, nullptr, nullptr, &si,
                         &pi)) {
-        printf("Não consegui iniciar %s (erro %lu).\n", W2U(exe.c_str()).c_str(), GetLastError());
+        printf(Tr(Str::CliStartFailed), W2U(exe.c_str()).c_str(), GetLastError());
         return 1;
     }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-    printf("eoscam iniciado em segundo plano (log em %s\\eoscam.log).\n", W2U(kDataDir).c_str());
+    printf(Tr(Str::CliStarted), W2U(kDataDir).c_str());
     return 0;
 }
 
 static int CmdStop() {
     HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\EosCamStop");
-    if (!ev) { printf("O eoscam não está rodando.\n"); return 0; }
+    if (!ev) { printf("%s", Tr(Str::CliNotRunning)); return 0; }
     SetEvent(ev);
     CloseHandle(ev);
     for (int i = 0; i < 50 && BackgroundRunning(); i++) Sleep(100);
-    printf(BackgroundRunning() ? "O eoscam não respondeu ao pedido de parada.\n" : "eoscam encerrado.\n");
+    printf("%s", Tr(BackgroundRunning() ? Str::CliStopTimeout : Str::CliStopped));
     return 0;
 }
 
@@ -149,20 +152,20 @@ static int CmdAutostart(const std::wstring& arg) {
         std::wstring value = L"\"" + ExeDir() + L"eoscam-bg.exe\"";
         LSTATUS s = RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, L"EosCam", REG_SZ, value.c_str(),
                                     DWORD((value.size() + 1) * sizeof(wchar_t)));
-        if (s != ERROR_SUCCESS) { printf("Falha ao gravar no registro (erro %ld).\n", (long)s); return 1; }
-        printf("O eoscam vai iniciar junto com o Windows (%s).\n", W2U(value.c_str()).c_str());
+        if (s != ERROR_SUCCESS) { printf(Tr(Str::CliRegWriteFailed), (long)s); return 1; }
+        printf(Tr(Str::CliAutostartOn), W2U(value.c_str()).c_str());
         return CmdStart();
     }
     if (arg == L"off") {
         LSTATUS s = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, L"EosCam");
         if (s != ERROR_SUCCESS && s != ERROR_FILE_NOT_FOUND) {
-            printf("Falha ao remover do registro (erro %ld).\n", (long)s);
+            printf(Tr(Str::CliRegDeleteFailed), (long)s);
             return 1;
         }
-        printf("O eoscam não vai mais iniciar com o Windows.\n");
+        printf("%s", Tr(Str::CliAutostartOff));
         return 0;
     }
-    printf("uso: eoscam autostart on|off\n");
+    printf("%s", Tr(Str::CliAutostartUsage));
     return 2;
 }
 
@@ -176,7 +179,7 @@ static int CmdList() {
     IMFActivate** devs = nullptr;
     UINT32 n = 0;
     HRESULT hr = MFEnumDeviceSources(a.Get(), &devs, &n);
-    if (FAILED(hr)) { printf("MFEnumDeviceSources falhou (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+    if (FAILED(hr)) { printf("MFEnumDeviceSources failed (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
     for (UINT32 i = 0; i < n; i++) {
         wchar_t* name = nullptr;
         UINT32 len = 0;
@@ -193,14 +196,14 @@ static int CmdStatus() {
     SharedChannel chan;
     DWORD err = 0;
     if (!chan.Open(false, &err)) {
-        printf("Canal %s não existe (erro %lu): a webcam virtual ainda não foi aberta por nenhum programa.\n",
+        printf("Channel %s does not exist (error %lu): no program has opened the virtual webcam yet.\n",
                W2U(MappingName()).c_str(), err);
         return 1;
     }
     for (int i = 0; i < 5 && !g_stop; i++) {
         SharedHeader& h = chan.Header();
         uint64_t now = NowTick();
-        printf("quadro nº %lld  slot %ld  produtor estado %ld (há %lld ms)  consumidor %ldx%ld (há %lld ms)\n",
+        printf("frame #%lld  slot %ld  producer state %ld (%lld ms ago)  consumer %ldx%ld (%lld ms ago)\n",
                (long long)h.frameNumber, (long)h.latestSlot, (long)h.producerState,
                h.producerTick ? (long long)(now - uint64_t(h.producerTick)) : -1LL, (long)h.consumerWidth,
                (long)h.consumerHeight, h.consumerTick ? (long long)(now - uint64_t(h.consumerTick)) : -1LL);
@@ -221,17 +224,16 @@ static int CmdInstall() {
     ComPtr<IMFVirtualCamera> vc;
     HRESULT hr = CreateVCam(vc);
     if (FAILED(hr)) {
-        printf("MFCreateVirtualCamera falhou (hr=0x%08lX).\n", (unsigned long)hr);
-        if (hr == REGDB_E_CLASSNOTREG)
-            printf("A DLL da fonte não está registrada. Rode scripts\\deploy.ps1 como administrador.\n");
+        printf(Tr(Str::CliInstallFailed), (unsigned long)hr);
+        if (hr == REGDB_E_CLASSNOTREG) printf("%s", Tr(Str::CliDllNotRegistered));
         return 1;
     }
     hr = vc->Start(nullptr);
     if (FAILED(hr)) {
-        printf("IMFVirtualCamera::Start falhou (hr=0x%08lX).\n", (unsigned long)hr);
+        printf(Tr(Str::CliVcamStartFailed), (unsigned long)hr);
         return 1;
     }
-    printf("Câmera virtual \"%s\" registrada.\n", W2U(kCameraName).c_str());
+    printf(Tr(Str::CliInstalled), W2U(kCameraName).c_str());
     return 0;
 }
 
@@ -240,10 +242,10 @@ static int CmdUninstall() {
     HRESULT hr = CreateVCam(vc);
     if (SUCCEEDED(hr)) hr = vc->Remove();
     if (FAILED(hr)) {
-        printf("Falha ao remover a câmera virtual (hr=0x%08lX).\n", (unsigned long)hr);
+        printf(Tr(Str::CliUninstallFailed), (unsigned long)hr);
         return 1;
     }
-    printf("Câmera virtual removida.\n");
+    printf("%s", Tr(Str::CliUninstalled));
     return 0;
 }
 
@@ -281,7 +283,7 @@ static bool SaveBgraAsJpeg(const std::wstring& path, const uint8_t* bgra, UINT w
 
 static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT wantH, const std::wstring& outPath);
 
-// Carrega eoscam-source.dll (ao lado do exe) direto neste processo, sem registro nem Frame Server.
+// Loads eoscam-source.dll (next to the exe) straight into this process, without registration or Frame Server.
 static HRESULT ActivateDirect(ComPtr<IMFActivate>& act) {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -302,9 +304,8 @@ static int CmdTest(double seconds, UINT wantW, UINT wantH, const std::wstring& o
     if (direct) {
         ComPtr<IMFActivate> act;
         HRESULT hr = ActivateDirect(act);
-        if (FAILED(hr)) { printf("Falha ao carregar a DLL diretamente (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
-        printf("Modo direto: fonte carregada neste processo (canal %s).\n",
-               W2U(MappingName()).c_str());
+        if (FAILED(hr)) { printf("Failed to load the DLL directly (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+        printf("Direct mode: source loaded in this process (channel %s).\n", W2U(MappingName()).c_str());
         return TestWithActivate(act.Get(), seconds, wantW, wantH, outPath);
     }
 
@@ -314,15 +315,15 @@ static int CmdTest(double seconds, UINT wantW, UINT wantH, const std::wstring& o
     IMFActivate** devs = nullptr;
     UINT32 n = 0;
     HRESULT hr = MFEnumDeviceSources(a.Get(), &devs, &n);
-    if (FAILED(hr)) { printf("MFEnumDeviceSources falhou (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+    if (FAILED(hr)) { printf("MFEnumDeviceSources failed (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
 
-    printf("Câmeras de vídeo encontradas:\n");
+    printf("Video cameras found:\n");
     ComPtr<IMFActivate> sel;
     for (UINT32 i = 0; i < n; i++) {
         wchar_t* name = nullptr;
         UINT32 len = 0;
         devs[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &len);
-        // o Windows acrescenta " (Câmera Virtual do Windows)" ao nome
+        // Windows appends " (Windows Virtual Camera)" to the name (localized)
         bool match = name && wcsncmp(name, kCameraName, wcslen(kCameraName)) == 0;
         printf("  %s %s\n", match ? "->" : "  ", W2U(name).c_str());
         if (match && !sel) sel = devs[i];
@@ -330,19 +331,19 @@ static int CmdTest(double seconds, UINT wantW, UINT wantH, const std::wstring& o
     }
     for (UINT32 i = 0; i < n; i++) devs[i]->Release();
     CoTaskMemFree(devs);
-    if (!sel) { printf("\nA câmera virtual não apareceu. Rode \"eoscam install\" primeiro.\n"); return 1; }
+    if (!sel) { printf("\nThe virtual camera did not show up. Run \"eoscam install\" first.\n"); return 1; }
     return TestWithActivate(sel.Get(), seconds, wantW, wantH, outPath);
 }
 
 static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT wantH, const std::wstring& outPath) {
     ComPtr<IMFMediaSource> src;
     HRESULT hr = sel->ActivateObject(IID_PPV_ARGS(&src));
-    if (FAILED(hr)) { printf("Falha ao abrir a câmera virtual (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+    if (FAILED(hr)) { printf("Failed to open the virtual camera (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
     ComPtr<IMFSourceReader> reader;
     hr = MFCreateSourceReaderFromMediaSource(src.Get(), nullptr, &reader);
-    if (FAILED(hr)) { printf("MFCreateSourceReaderFromMediaSource falhou (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+    if (FAILED(hr)) { printf("MFCreateSourceReaderFromMediaSource failed (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
 
-    printf("\nFormatos oferecidos:\n");
+    printf("\nFormats offered:\n");
     ComPtr<IMFMediaType> chosen;
     for (DWORD k = 0;; k++) {
         ComPtr<IMFMediaType> t;
@@ -357,11 +358,11 @@ static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT w
                den ? double(num) / den : 0.0);
         if (pick) chosen = t;
     }
-    if (!chosen) { printf("Formato %ux%u não oferecido.\n", wantW, wantH); return 1; }
+    if (!chosen) { printf("Format %ux%u not offered.\n", wantW, wantH); return 1; }
     hr = reader->SetCurrentMediaType(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), nullptr, chosen.Get());
-    if (FAILED(hr)) { printf("SetCurrentMediaType falhou (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
+    if (FAILED(hr)) { printf("SetCurrentMediaType failed (hr=0x%08lX)\n", (unsigned long)hr); return 1; }
 
-    printf("\nLendo quadros por %.0f s (o Live View leva alguns segundos para ligar)...\n", seconds);
+    printf("\nReading frames for %.0f s (Live View takes a few seconds to start)...\n", seconds);
     FILETIME c, e, k0, u0, k1, u1, si0, sk0, su0, si1, sk1, su1;
     GetProcessTimes(GetCurrentProcess(), &c, &e, &k0, &u0);
     GetSystemTimes(&si0, &sk0, &su0);
@@ -373,7 +374,7 @@ static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT w
         LONGLONG ts = 0;
         ComPtr<IMFSample> sample;
         hr = reader->ReadSample(DWORD(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &stream, &flags, &ts, &sample);
-        if (FAILED(hr)) { printf("ReadSample falhou (hr=0x%08lX)\n", (unsigned long)hr); break; }
+        if (FAILED(hr)) { printf("ReadSample failed (hr=0x%08lX)\n", (unsigned long)hr); break; }
         if (!sample) continue;
         frames++;
         ComPtr<IMFMediaBuffer> buf;
@@ -397,25 +398,25 @@ static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT w
     double sysTotal = (FtSec(sk1) + FtSec(su1)) - (FtSec(sk0) + FtSec(su0));
     double sysIdle = FtSec(si1) - FtSec(si0);
     double proc = (FtSec(k1) + FtSec(u1)) - (FtSec(k0) + FtSec(u0));
-    printf("\n================ RESULTADO ================\n");
-    printf("Formato .............. NV12 %ux%u\n", wantW, wantH);
-    printf("Amostras recebidas ... %llu em %.1f s (%.1f/s)\n", (unsigned long long)frames, secs, frames / secs);
-    printf("Quadros distintos .... %llu (%.1f/s)\n", (unsigned long long)distinct, distinct / secs);
-    if (firstLiveTick) printf("Imagem ao vivo após .. %.1f s\n", (firstLiveTick - t0) / 1000.0);
-    printf("CPU deste teste ...... %.1f%% de um núcleo\n", proc / secs * 100);
-    printf("CPU do sistema todo .. %.1f%%\n", sysTotal > 0 ? (sysTotal - sysIdle) / sysTotal * 100 : 0.0);
+    printf("\n================= RESULT =================\n");
+    printf("Format ............... NV12 %ux%u\n", wantW, wantH);
+    printf("Samples received ..... %llu in %.1f s (%.1f/s)\n", (unsigned long long)frames, secs, frames / secs);
+    printf("Distinct frames ...... %llu (%.1f/s)\n", (unsigned long long)distinct, distinct / secs);
+    if (firstLiveTick) printf("Live image after ..... %.1f s\n", (firstLiveTick - t0) / 1000.0);
+    printf("CPU of this test ..... %.1f%% of a core\n", proc / secs * 100);
+    printf("Whole-system CPU ..... %.1f%%\n", sysTotal > 0 ? (sysTotal - sysIdle) / sysTotal * 100 : 0.0);
 
     if (last.size() >= size_t(wantW) * wantH * 3 / 2) {
         std::vector<uint8_t> bgra(size_t(wantW) * wantH * 4);
         Nv12ToBgra(last.data(), int(wantW), int(wantH), bgra.data());
         if (SaveBgraAsJpeg(outPath, bgra.data(), wantW, wantH))
-            printf("Último quadro salvo em %s\n", W2U(outPath.c_str()).c_str());
+            printf("Last frame saved to %s\n", W2U(outPath.c_str()).c_str());
     }
     return 0;
 }
 
 // =====================================================================================
-// process: pipeline de imagem sobre um JPEG (sem câmera), para testar efeitos e medir os tempos
+// process: image pipeline over a JPEG (no camera), to test effects and measure the timings
 
 static std::vector<uint8_t> ReadWholeFile(const std::wstring& path) {
     std::vector<uint8_t> d;
@@ -433,17 +434,17 @@ static std::vector<uint8_t> ReadWholeFile(const std::wstring& path) {
 
 static const char* FxStateName(FxState s) {
     switch (s) {
-        case FxState::Off: return "desligado";
-        case FxState::Loading: return "carregando";
-        case FxState::Active: return "ativo";
-        case FxState::Failed: return "FALHOU";
-        case FxState::Unavailable: return "indisponível";
+        case FxState::Off: return "off";
+        case FxState::Loading: return "loading";
+        case FxState::Active: return "active";
+        case FxState::Failed: return "FAILED";
+        case FxState::Unavailable: return "unavailable";
     }
     return "?";
 }
 
-// Dá partida nos carregamentos dos modelos (em segundo plano) e processa o mesmo quadro até que todos os
-// efeitos pedidos estejam ativos (ou tenham falhado); depois aquece o estado temporal (Denoise, Green Screen).
+// Kicks off the model loads (in the background) and processes the same frame until every requested effect
+// is active (or has failed); then warms up the temporal state (Denoise, Green Screen).
 static bool WarmUpPipeline(FramePipeline& pipe, const std::vector<uint8_t>& jpeg, std::vector<uint8_t>& nv12) {
     pipe.Prewarm();
     uint64_t t0 = NowTick();
@@ -456,27 +457,27 @@ static bool WarmUpPipeline(FramePipeline& pipe, const std::vector<uint8_t>& jpeg
         if (!pending || NowTick() - t0 > 60000) break;
         Sleep(20);
     }
-    printf("Efeitos carregados em %.1f s\n", double(NowTick() - t0) / 1000.0);
+    printf("Effects loaded in %.1f s\n", double(NowTick() - t0) / 1000.0);
     for (int i = 0; i < 15; i++) pipe.Process(jpeg.data(), jpeg.size(), nv12.data());
     return true;
 }
 
 static int CmdProcess(const std::wstring& inPath, const std::wstring& outPath, int bench) {
     if (inPath.empty()) {
-        printf("uso: eoscam process entrada.jpg [--out saida.jpg] [--bench N]\n");
+        printf("usage: eoscam process input.jpg [--out output.jpg] [--bench N]\n");
         return 2;
     }
     std::vector<uint8_t> jpeg = ReadWholeFile(inPath);
-    if (jpeg.empty()) { printf("Não consegui ler %s\n", W2U(inPath.c_str()).c_str()); return 1; }
+    if (jpeg.empty()) { printf("Couldn't read %s\n", W2U(inPath.c_str()).c_str()); return 1; }
 
     SettingsStore store;
     store.Load(SettingsStore::DefaultPath());
-    printf("Configurações: %s\n", W2U(store.Path().c_str()).c_str());
+    printf("Settings: %s\n", W2U(store.Path().c_str()).c_str());
     FramePipeline pipe(store);
-    if (!pipe.Init()) { printf("Falha ao iniciar o pipeline.\n"); return 1; }
+    if (!pipe.Init()) { printf("Failed to start the pipeline.\n"); return 1; }
     std::vector<uint8_t> nv12(kFrameBytes);
 
-    if (!WarmUpPipeline(pipe, jpeg, nv12)) { printf("Falha ao processar o quadro.\n"); return 1; }
+    if (!WarmUpPipeline(pipe, jpeg, nv12)) { printf("Failed to process the frame.\n"); return 1; }
 
     if (bench > 0) {
         FILETIME c, e, k0, u0, k1, u1;
@@ -486,39 +487,40 @@ static int CmdProcess(const std::wstring& inPath, const std::wstring& outPath, i
         double secs = double(NowTick() - b0) / 1000.0;
         GetProcessTimes(GetCurrentProcess(), &c, &e, &k1, &u1);
         double cpu = (FtSec(k1) + FtSec(u1)) - (FtSec(k0) + FtSec(u0));
-        printf("Benchmark: %d quadros em %.2f s = %.1f quadros/s (%.1f ms por quadro); CPU %.1f%% de um núcleo\n",
+        printf("Benchmark: %d frames in %.2f s = %.1f frames/s (%.1f ms per frame); CPU %.1f%% of a core\n",
                bench, secs, bench / secs, secs * 1000.0 / bench, cpu / secs * 100.0);
     }
     PipelineStats st = pipe.Stats();
-    if (st.maxineAvailable) printf("Maxine: disponível (%s)\n", st.maxineVersion.c_str());
-    else printf("Maxine: INDISPONÍVEL (%s)\n", st.maxineReason.c_str());
-    printf("  Denoise ............ %s (%s)\n", FxStateName(st.denoise.state), st.denoise.text.c_str());
-    printf("  Artifact Reduction . %s (%s)\n", FxStateName(st.artifact.state), st.artifact.text.c_str());
-    printf("  Super Resolution ... %s (%s)\n", FxStateName(st.superRes.state), st.superRes.text.c_str());
-    printf("  Green Screen ....... %s (%s)\n", FxStateName(st.greenScreen.state), st.greenScreen.text.c_str());
-    printf("  Desfoque do SDK .... %s (%s)\n", FxStateName(st.blur.state), st.blur.text.c_str());
-    if (!st.backgroundNote.empty()) printf("  Fundo: %s\n", st.backgroundNote.c_str());
-    printf("Tempo por quadro (ms, média móvel): decodificação %.2f | GPU: envio %.2f, denoise %.2f, artefatos %.2f, "
-           "super resolução %.2f, máscara/desfoque %.2f, retorno %.2f | CPU: escala+ajustes+fundo+NV12 %.2f | total %.2f\n",
+    if (st.maxineAvailable) printf("Maxine: available (%s)\n", st.maxineVersion.c_str());
+    else printf("Maxine: UNAVAILABLE (%s)\n", Text(st.maxineReason, Lang::En).c_str());
+    auto fx = [](const FxInfo& i) { return FxText(i, Lang::En); };
+    printf("  Denoise ............ %s (%s)\n", FxStateName(st.denoise.state), fx(st.denoise).c_str());
+    printf("  Artifact Reduction . %s (%s)\n", FxStateName(st.artifact.state), fx(st.artifact).c_str());
+    printf("  Super Resolution ... %s (%s)\n", FxStateName(st.superRes.state), fx(st.superRes).c_str());
+    printf("  Green Screen ....... %s (%s)\n", FxStateName(st.greenScreen.state), fx(st.greenScreen).c_str());
+    printf("  SDK blur ........... %s (%s)\n", FxStateName(st.blur.state), fx(st.blur).c_str());
+    if (!st.backgroundNote.empty()) printf("  Background: %s\n", Text(st.backgroundNote, Lang::En).c_str());
+    printf("Time per frame (ms, moving average): decode %.2f | GPU: upload %.2f, denoise %.2f, artifacts %.2f, "
+           "super resolution %.2f, mask/blur %.2f, download %.2f | CPU: scale+adjust+background+NV12 %.2f | total %.2f\n",
            st.msDecode, st.msUpload, st.msDenoise, st.msArtifact, st.msSuperRes, st.msSegment, st.msDownload,
            st.msFinal, st.msTotal);
 
     std::vector<uint8_t> bgra(size_t(kFrameWidth) * kFrameHeight * 4);
     Nv12ToBgra(nv12.data(), int(kFrameWidth), int(kFrameHeight), bgra.data());
     if (SaveBgraAsJpeg(outPath, bgra.data(), kFrameWidth, kFrameHeight))
-        printf("Quadro salvo em %s\n", W2U(outPath.c_str()).c_str());
+        printf("Frame saved to %s\n", W2U(outPath.c_str()).c_str());
     return 0;
 }
 
 // =====================================================================================
-// cam: diagnóstico dos ajustes da câmera (PTP) com a ponte parada
+// cam: diagnostics of the camera settings (PTP) with the bridge stopped
 
 static void PrintCameraProps(CanonCamera& cam) {
     for (auto& [prop, st] : cam.AllProps()) {
         printf("  %04X", prop);
-        if (st.hasValue) printf(" valor=0x%X", st.value);
+        if (st.hasValue) printf(" value=0x%X", st.value);
         if (st.hasList) {
-            printf(" lista(%zu):", st.list.size());
+            printf(" list(%zu):", st.list.size());
             for (uint32_t v : st.list) printf(" %X", v);
         }
         if (st.raw.size() > 4) {
@@ -529,17 +531,17 @@ static void PrintCameraProps(CanonCamera& cam) {
     }
 }
 
-// Conecta, mostra as propriedades que a câmera anuncia, aplica --set PROP=VALOR (hexadecimal) um por vez e salva,
-// depois de cada um, um quadro processado pelo pipeline (para comparar o efeito na imagem).
+// Connects, shows the properties the camera announces, applies --set PROP=VALUE (hexadecimal) one at a time
+// and, after each one, saves a frame processed by the pipeline (to compare the effect on the image).
 static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& outPath) {
     if (BackgroundRunning()) {
-        printf("Pare o eoscam antes (eoscam stop): só um programa pode falar com a câmera.\n");
+        printf("Stop eoscam first (eoscam stop): only one program can talk to the camera.\n");
         return 1;
     }
     CanonCamera cam;
     std::string err;
-    if (!cam.Connect(err)) { printf("Câmera indisponível: %s\n", err.c_str()); return 1; }
-    printf("Câmera: %s\n", cam.Name().c_str());
+    if (!cam.Connect(err)) { printf("Camera unavailable: %s\n", err.c_str()); return 1; }
+    printf("Camera: %s\n", cam.Name().c_str());
 
     SettingsStore store;
     store.Load(SettingsStore::DefaultPath());
@@ -564,15 +566,15 @@ static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& out
         size_t ny = size_t(kFrameWidth) * kFrameHeight;
         for (size_t i = 0; i < ny; i += 7) sy += nv12[i];
         for (size_t i = 0; i < ny / 2; i += 2) { su += nv12[ny + i]; sv += nv12[ny + i + 1]; }
-        printf("  luminância média %.1f, croma U %.1f V %.1f\n", sy / double((ny + 6) / 7), su / double(ny / 4),
+        printf("  average luma %.1f, chroma U %.1f V %.1f\n", sy / double((ny + 6) / 7), su / double(ny / 4),
                sv / double(ny / 4));
         if (SaveBgraAsJpeg(path, bgra.data(), kFrameWidth, kFrameHeight))
-            printf("  quadro salvo em %s\n", W2U(path.c_str()).c_str());
+            printf("  frame saved to %s\n", W2U(path.c_str()).c_str());
     };
 
     grab(2500);
     cam.PollEvents();
-    printf("Propriedades anunciadas pela câmera:\n");
+    printf("Properties announced by the camera:\n");
     PrintCameraProps(cam);
     std::wstring base = outPath;
     size_t dot = base.find_last_of(L'.');
@@ -582,11 +584,11 @@ static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& out
 
     int n = 0;
     for (auto& a : sets) {
-        // PROP=VALOR ou PROP=P0,P1,... (propriedade estruturada, palavras de 32 bits; valores com sinal em decimal)
+        // PROP=VALUE or PROP=P0,P1,... (structured property, 32-bit words; negative values with a leading -)
         unsigned prop = 0;
         size_t eq = a.find(L'=');
         if (eq == std::wstring::npos || swscanf_s(a.c_str(), L"%x", &prop) != 1) {
-            printf("--set PROP=VALOR (hexadecimal)\n");
+            printf("--set PROP=VALUE (hexadecimal)\n");
             continue;
         }
         std::vector<uint32_t> words;
@@ -600,13 +602,13 @@ static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& out
             pos = c + 1;
         }
         PtpResult r = words.size() == 1 ? cam.WriteProp(prop, words[0]) : cam.WritePropWords(prop, words);
-        printf("Ajuste %04X (%zu palavras): hr=0x%08lX resposta=0x%04lX %s\n", prop, words.size(), (unsigned long)r.hr,
-               (unsigned long)r.code, r.ok() ? "(aceito)" : "(RECUSADO)");
+        printf("Setting %04X (%zu words): hr=0x%08lX response=0x%04lX %s\n", prop, words.size(), (unsigned long)r.hr,
+               (unsigned long)r.code, r.ok() ? "(accepted)" : "(REFUSED)");
         grab(2500);
         cam.PollEvents();
         PropState ps;
         if (cam.GetProp(prop, ps)) {
-            printf("  valor agora: 0x%X", ps.value);
+            printf("  value now: 0x%X", ps.value);
             if (ps.raw.size() > 4)
                 for (size_t k = 0; k + 4 <= ps.raw.size() && k < 48; k += 4)
                     printf(" %d", int(uint32_t(ps.raw[k]) | uint32_t(ps.raw[k + 1]) << 8 |
@@ -620,49 +622,31 @@ static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& out
 }
 
 // =====================================================================================
-// panel: abre o painel do eoscam-bg em execução (inicia-o se preciso)
+// panel: opens the panel of the running eoscam-bg (starts it if needed)
 
 static int CmdPanel() {
     auto find = [] { return FindWindowW(kBridgeWindowClass, nullptr); };
     HWND w = find();
     if (!w) {
         if (BackgroundRunning()) {
-            printf("O eoscam está rodando sem janela (\"eoscam run\" em console): o painel só existe no eoscam-bg.\n");
+            printf("%s", Tr(Str::CliPanelConsoleOnly));
             return 1;
         }
         if (CmdStart() != 0) return 1;
         for (int i = 0; i < 100 && !(w = find()); i++) Sleep(100);
-        if (!w) { printf("O eoscam iniciou, mas a janela não apareceu.\n"); return 1; }
+        if (!w) { printf("%s", Tr(Str::CliPanelNoWindow)); return 1; }
     }
     PostMessageW(w, kMsgOpenPanel, 0, 0);
-    printf("Painel aberto.\n");
+    printf("%s", Tr(Str::CliPanelOpened));
     return 0;
 }
 
 // =====================================================================================
 
-static void Usage() {
-    printf(
-        "uso: eoscam [comando]\n"
-        "  run                 (padrão) faz a ponte entre a câmera Canon e a webcam virtual, neste console\n"
-        "  start | stop        inicia/encerra a ponte em segundo plano (eoscam-bg.exe)\n"
-        "  autostart on|off    inicia (ou não) a ponte em segundo plano junto com o Windows\n"
-        "  install             registra a câmera virtual \"Canon EOS Webcam (eoscam)\"\n"
-        "  uninstall           remove a câmera virtual\n"
-        "  cam [--set PROP=VALOR]... [--out f.jpg]\n"
-        "                      diagnóstico: lista os ajustes que a câmera anuncia e testa escrever (hex), salvando quadros\n"
-        "  panel               abre o painel de controle (inicia o eoscam-bg se ele não estiver rodando)\n"
-        "  process in.jpg [--out f.jpg] [--bench N]\n"
-        "                      passa um JPEG pelo pipeline de imagem (sem câmera): testa efeitos e mede tempos\n"
-        "  status              mostra o estado do canal entre o app e a câmera virtual\n"
-        "  list                lista as câmeras de vídeo que o Windows enxerga\n"
-        "  test [--seconds N] [--size LxA] [--out arquivo.jpg] [--direct]\n"
-        "                      abre a webcam virtual como um app comum e mede o desempenho\n"
-        "                      --direct carrega a DLL neste processo (sem Frame Server; use EOSCAM_LOCAL=1\n"
-        "                      tanto aqui quanto no \"eoscam run\")\n");
-}
+static void Usage() { printf("%s", Tr(Str::CliUsage)); }
 
 static int Dispatch(int argc, wchar_t** argv) {
+    InitLang(SettingsStore::DefaultPath().c_str());
     std::wstring cmd = argc > 1 ? argv[1] : L"run";
     double seconds = 15;
     UINT w = kFrameWidth, h = kFrameHeight;
@@ -687,8 +671,8 @@ static int Dispatch(int argc, wchar_t** argv) {
     if (cmd == L"autostart") return CmdAutostart(positional);
     if (cmd == L"panel") return CmdPanel();
 
-    // No eoscam-bg a thread principal é a da interface (apartamento STA, necessário para o diálogo de
-    // arquivos); a ponte inicia o próprio COM na thread dela.
+    // In eoscam-bg the main thread is the UI thread (STA apartment, needed by the file dialog); the bridge
+    // initializes its own COM on its thread.
     bool ui = cmd == L"run" && kWithUi;
     if (FAILED(CoInitializeEx(nullptr, ui ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED))) return 1;
     if (cmd != L"run") MFStartup(MF_VERSION);
@@ -709,16 +693,16 @@ static int Dispatch(int argc, wchar_t** argv) {
 
 #ifdef EOSCAM_BACKGROUND
 
-// eoscam-bg.exe: mesma ponte do "eoscam run", sem janela, com log em ProgramData\EosCam\eoscam.log.
+// eoscam-bg.exe: the same bridge as "eoscam run", without a console, logging to ProgramData\EosCam\eoscam.log.
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     CreateDirectoryW(kDataDir, nullptr);
     std::wstring log = std::wstring(kDataDir) + L"\\eoscam.log";
     wchar_t envLog[MAX_PATH];
-    DWORD nl = GetEnvironmentVariableW(L"EOSCAM_LOG", envLog, MAX_PATH);  // só para testes
+    DWORD nl = GetEnvironmentVariableW(L"EOSCAM_LOG", envLog, MAX_PATH);  // for tests only
     if (nl > 0 && nl < MAX_PATH) log = envLog;
     WIN32_FILE_ATTRIBUTE_DATA fa{};
     if (GetFileAttributesExW(log.c_str(), GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 2u * 1024 * 1024)
-        DeleteFileW(log.c_str());  // recomeça o log quando passa de 2 MB
+        DeleteFileW(log.c_str());  // starts the log over when it exceeds 2 MB
     FILE* f = nullptr;
     _wfreopen_s(&f, log.c_str(), L"a", stdout);
     wchar_t* args[] = {const_cast<wchar_t*>(L"eoscam-bg"), const_cast<wchar_t*>(L"run")};

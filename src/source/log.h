@@ -1,5 +1,5 @@
-// Log simples em C:\ProgramData\EosCam\source.log (a DLL roda dentro de um serviço,
-// sem console; o deploy dá permissão de escrita nessa pasta para LocalService).
+// Simple log in C:\ProgramData\EosCam\source.log (the DLL runs inside a service, without a console; the
+// deploy script grants LocalService write access to that folder). Messages are in English.
 #pragma once
 
 #include <windows.h>
@@ -35,7 +35,7 @@ inline void Log(const char* fmt, ...) {
     if (f != INVALID_HANDLE_VALUE) {
         LARGE_INTEGER size{};
         GetFileSizeEx(f, &size);
-        if (size.QuadPart < 8ll * 1024 * 1024) {  // não deixa o log crescer sem limite
+        if (size.QuadPart < 8ll * 1024 * 1024) {  // keeps the log from growing without bound
             DWORD w = 0;
             WriteFile(f, line, DWORD(n > 0 ? n : 0), &w, nullptr);
         }

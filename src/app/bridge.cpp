@@ -12,7 +12,7 @@ namespace eoscam {
 
 namespace {
 
-// Sleep() do Windows tem resolução de ~15,6 ms; para esperas curtas usamos um timer de alta resolução.
+// Windows Sleep() has a resolution of ~15.6 ms; short waits use a high-resolution timer instead.
 void ShortSleep(DWORD ms) {
     static thread_local HANDLE timer =
         CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
@@ -30,8 +30,8 @@ double ProcessCpuSeconds() {
     return FtSec(k) + FtSec(u);
 }
 
-// Diagnóstico: CPU (kernel+usuário) acumulada de cada thread do processo, com o nome dado por
-// SetThreadDescription. Serve para ver qual thread gasta CPU (trabalho real x espera ativa).
+// Diagnostics: accumulated CPU (kernel+user) of each thread of the process, with the name given by
+// SetThreadDescription. Shows which thread spends CPU (real work versus busy waiting).
 void LogThreadCpu() {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
     if (snap == INVALID_HANDLE_VALUE) return;
@@ -52,7 +52,7 @@ void LogThreadCpu() {
                     for (const wchar_t* p = d; *p; p++) name += *p < 128 ? char(*p) : '?';
                     LocalFree(d);
                 }
-                Log("  thread %lu %s: CPU %.2f s (usuário %.2f, kernel %.2f)", (unsigned long)te.th32ThreadID,
+                Log("  thread %lu %s: CPU %.2f s (user %.2f, kernel %.2f)", (unsigned long)te.th32ThreadID,
                     name.c_str(), cpu, FtSec(u), FtSec(k));
             }
         }
@@ -90,29 +90,29 @@ BridgeStatus Bridge::Status() const {
 
 bool Bridge::CameraProp(uint32_t prop, PropState& out) const { return cam_.GetProp(prop, out); }
 
-void Bridge::SetCameraProp(uint32_t prop, uint32_t value, const std::string& label) {
+void Bridge::SetCameraProp(uint32_t prop, uint32_t value, Str label) {
     std::lock_guard<std::mutex> lk(cmdMu_);
     cmds_.push_back({prop, {value}, false, label});
 }
 
-void Bridge::SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, const std::string& label) {
+void Bridge::SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, Str label) {
     std::lock_guard<std::mutex> lk(cmdMu_);
     cmds_.push_back({prop, words, true, label});
 }
 
-std::string Bridge::CameraError() const {
+std::string Bridge::CameraError(Lang lang) const {
     std::lock_guard<std::mutex> lk(cmdMu_);
     if (camError_.empty() || NowTick() - camErrorTick_ > 8000) return {};
-    return camError_;
+    return Text(camError_, lang);
 }
 
-void Bridge::SetCameraError(const std::string& msg) {
+void Bridge::SetCameraError(const Msg& msg) {
     std::lock_guard<std::mutex> lk(cmdMu_);
     camError_ = msg;
     camErrorTick_ = NowTick();
 }
 
-// Executa, na thread de captura, os ajustes pedidos pelo painel.
+// Runs, on the capture thread, the camera settings requested by the panel.
 void Bridge::RunCameraCommands() {
     for (;;) {
         CamCommand c;
@@ -123,27 +123,27 @@ void Bridge::RunCameraCommands() {
             cmds_.pop_front();
         }
         if (!cam_.IsConnected()) {
-            SetCameraError("A câmera não está conectada: não deu para ajustar " + c.label + ".");
+            SetCameraError(Msg(Str::CamErrNotConnected, {}, c.label));
             continue;
         }
         PtpResult r = c.structured ? cam_.WritePropWords(c.prop, c.words) : cam_.WriteProp(c.prop, c.words[0]);
         if (!r.ok()) {
-            char b[160];
-            snprintf(b, sizeof b, "A câmera recusou o ajuste (%s): resposta 0x%04lX, hr=0x%08lX. Modo automático?",
-                     c.label.c_str(), (unsigned long)r.code, (unsigned long)r.hr);
-            SetCameraError(b);
-            Log("câmera: %s", b);
+            char b[64];
+            snprintf(b, sizeof b, "0x%04lX, hr=0x%08lX", (unsigned long)r.code, (unsigned long)r.hr);
+            Msg m(Str::CamErrRefused, b, c.label);
+            SetCameraError(m);
+            Log("camera: %s", Text(m, Lang::En).c_str());
         } else {
-            Log("câmera: %s ajustado (prop %04X = 0x%X)", c.label.c_str(), c.prop, c.words.empty() ? 0u : c.words[0]);
+            Log("camera: %s set (prop %04X = 0x%X)", Tr(c.label, Lang::En), c.prop, c.words.empty() ? 0u : c.words[0]);
         }
-        cam_.PollEvents();  // lê de volta o valor que a câmera de fato aceitou
+        cam_.PollEvents();  // reads back the value the camera actually accepted
         propsGen_ = cam_.PropsGeneration();
     }
 }
 
 void Bridge::ProcessLoop() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    SetThreadDescription(GetCurrentThread(), L"processamento");
+    SetThreadDescription(GetCurrentThread(), L"processing");
     pipeline_.Init();
     std::vector<uint8_t> jpeg(1 << 20), nv12(kFrameBytes);
     uint64_t lastReload = 0, taken = 0;
@@ -170,7 +170,7 @@ void Bridge::ProcessLoop() {
             framesOut_++;
         } else {
             static int fails = 0;
-            if (fails++ < 5) Log("pipeline: falha ao processar um quadro (%zu bytes)", jpeg.size());
+            if (fails++ < 5) Log("pipeline: failed to process a frame (%zu bytes)", jpeg.size());
         }
     }
     CoUninitialize();
@@ -186,22 +186,22 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
     double cpuBase = ProcessCpuSeconds();
     uint64_t cpuTick = NowTick();
 
-    SetThreadDescription(GetCurrentThread(), L"captura");
+    SetThreadDescription(GetCurrentThread(), L"capture");
     proc_ = std::thread([this] { ProcessLoop(); });
 
-    Log("eoscam rodando. Ctrl+C para sair.");
-    Log("Aguardando a câmera virtual ser registrada/aberta pelo Windows...");
+    Log("eoscam running. Ctrl+C to quit.");
+    Log("Waiting for Windows to register/open the virtual camera...");
 
     while (!stop_ && !(externalStop && *externalStop)) {
         if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         uint64_t now = NowTick();
-        // O canal Global\ só existe depois que a DLL é aberta por algum programa (um usuário comum não
-        // consegue criá-lo). Sem ele a ponte ainda funciona para o painel (câmera + prévia), só não publica.
+        // The Global\ channel only exists after some program opens the DLL (a regular user cannot create
+        // it). Without it the bridge still works for the panel (camera + preview), it just doesn't publish.
         if (!chan_.IsOpen() && now - lastOpenTry >= 1000) {
             lastOpenTry = now;
             if (chan_.Open(true)) {
                 chanReady_ = true;
-                Log("Canal com a câmera virtual conectado.");
+                Log("Channel to the virtual camera connected.");
             }
         }
 
@@ -217,8 +217,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
             state_ = int(state);
             std::string err;
             if (cam_.Connect(err)) {
-                Log("%s: Live View ligado (%s).", consumer ? "Webcam em uso" : "Painel aberto",
-                    cam_.Name().c_str());
+                Log("%s: Live View on (%s).", consumer ? "Webcam in use" : "Panel open", cam_.Name().c_str());
                 state = ProducerState::Streaming;
                 lastError.clear();
                 statsTick = NowTick();
@@ -229,12 +228,12 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
                     camName_ = cam_.Name();
                 }
                 propsGen_ = cam_.PropsGeneration();
-                prewarm_ = true;     // pré-carrega os efeitos ativos
-                restarted_ = true;   // zera o estado temporal dos efeitos
+                prewarm_ = true;     // preloads the enabled effects
+                restarted_ = true;   // resets the temporal state of the effects
                 SetEvent(mboxEvent_);
             } else {
                 state = ProducerState::NoCamera;
-                if (err != lastError) Log("Câmera indisponível: %s", err.c_str());
+                if (err != lastError) Log("Camera unavailable: %s", err.c_str());
                 lastError = err;
             }
         }
@@ -243,7 +242,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
             cam_.Disconnect();
             camConnected_ = false;
             state = ProducerState::Idle;
-            Log("Webcam não está mais em uso: Live View desligado.");
+            Log("Webcam no longer in use: Live View off.");
         }
         if (!cam_.IsConnected() && !wanted && state != ProducerState::Idle) state = ProducerState::Idle;
 
@@ -257,7 +256,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
             if (cam_.PropsGeneration() != propsGen_) propsGen_ = cam_.PropsGeneration();
             if (cam_.Recoveries() != lastRecoveries) {
                 lastRecoveries = cam_.Recoveries();
-                Log("  a câmera parou de enviar quadros (resposta 0x%04lX); religando o Live View",
+                Log("  the camera stopped sending frames (response 0x%04lX); restarting Live View",
                     (unsigned long)cam_.LastCode());
             }
             switch (fr) {
@@ -274,11 +273,11 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
                     break;
                 }
                 case CanonCamera::Frame::NotReady:
-                    // O Live View da T3 renova a ~30 fps; aqui esperamos só um pouco antes de pedir de novo.
+                    // The T3 Live View refreshes at ~30 fps; wait only a little before asking again.
                     ShortSleep(3);
                     break;
                 case CanonCamera::Frame::Error:
-                    Log("Perdi a comunicação com a câmera; tentando reconectar.");
+                    Log("Lost communication with the camera; trying to reconnect.");
                     cam_.Disconnect();
                     camConnected_ = false;
                     state = ProducerState::NoCamera;
@@ -301,10 +300,10 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
                 cpuBase = cpu;
                 cpuTick = tn;
                 uint64_t fo = framesOut_;
-                Log("  %.1f quadros/s da câmera, %.1f publicados; CPU da ponte %.1f%% de um núcleo", statFrames / secs,
+                Log("  %.1f frames/s from the camera, %.1f published; bridge CPU %.1f%% of a core", statFrames / secs,
                     double(fo - statOut) / secs, cpuPct);
-                Log("  por quadro (ms): decodificação %.2f | GPU: envio %.2f, denoise %.2f, artefatos %.2f, super "
-                    "resolução %.2f, máscara/desfoque %.2f, retorno %.2f | CPU: escala+ajustes+fundo+NV12 %.2f | "
+                Log("  per frame (ms): decode %.2f | GPU: upload %.2f, denoise %.2f, artifacts %.2f, super "
+                    "resolution %.2f, mask/blur %.2f, download %.2f | CPU: scale+adjust+background+NV12 %.2f | "
                     "total %.2f",
                     ps.msDecode, ps.msUpload, ps.msDenoise, ps.msArtifact, ps.msSuperRes, ps.msSegment,
                     ps.msDownload, ps.msFinal, ps.msTotal);
@@ -313,7 +312,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
                 statFrames = 0;
             }
         } else {
-            RunCameraCommands();  // responde com o erro "câmera não conectada"
+            RunCameraCommands();  // answers with the "camera not connected" error
             Sleep(100);
         }
     }
@@ -323,14 +322,14 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
         double cpu = ProcessCpuSeconds() - cpuBase;
         double secs = double(NowTick() - cpuTick) / 1000.0;
         if (ps.frames > 0 && secs > 1)
-            Log("  resumo: %llu quadros processados; por quadro (ms): decodificação %.2f | GPU: envio %.2f, denoise "
-                "%.2f, artefatos %.2f, super resolução %.2f, máscara/desfoque %.2f, retorno %.2f | CPU: escala+"
-                "ajustes+fundo+NV12 %.2f | total %.2f; CPU da ponte %.1f%% de um núcleo",
+            Log("  summary: %llu frames processed; per frame (ms): decode %.2f | GPU: upload %.2f, denoise "
+                "%.2f, artifacts %.2f, super resolution %.2f, mask/blur %.2f, download %.2f | CPU: scale+"
+                "adjust+background+NV12 %.2f | total %.2f; bridge CPU %.1f%% of a core",
                 (unsigned long long)ps.frames, ps.msDecode, ps.msUpload, ps.msDenoise, ps.msArtifact, ps.msSuperRes,
                 ps.msSegment, ps.msDownload, ps.msFinal, ps.msTotal, cpu / secs * 100.0);
     }
     LogThreadCpu();
-    Log("Encerrando...");
+    Log("Shutting down...");
     stop_ = true;
     SetEvent(mboxEvent_);
     if (proc_.joinable()) proc_.join();

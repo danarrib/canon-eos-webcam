@@ -1,200 +1,197 @@
-# eoscam v2: processamento na GPU (NVIDIA Maxine) e painel de controle
+# eoscam v2: GPU processing (NVIDIA Maxine) and control panel
 
-Status: especificação aprovada pelo usuário em 2026-11-16. Leia junto com o `README.md`.
+Status: specification approved by the user on 2026-11-16 (implemented). Read it together with `README.md`.
 
-## Objetivo
+## Goal
 
-1. Mover o processamento de imagem para a ponte (`eoscam-bg.exe` / `eoscam run`), na GPU,
-   com os efeitos do NVIDIA Maxine Video Effects, e entregar **1920×1080** à câmera virtual.
-2. Criar um **painel de controle** (ícone na bandeja + janela) com ajustes de imagem, efeitos
-   de IA, fundo virtual e ajustes da própria câmera, aplicados ao vivo e persistidos.
+1. Move image processing to the bridge (`eoscam-bg.exe` / `eoscam run`), on the GPU, with the NVIDIA
+   Maxine Video Effects, and deliver **1920×1080** to the virtual camera.
+2. Create a **control panel** (tray icon + window) with image adjustments, AI effects, virtual
+   background and the camera's own settings, applied live and persisted.
 
-## Estado atual (v1)
+## Starting point (v1)
 
-- `src/app/canon_camera.*`: PTP pelo WPD (`PtpDevice`, `CanonCamera`). Live View via
-  `GetViewFinderData` (JPEG 1056×704, 4:2:2, ~29 fps). Religa o Live View sozinho se ele parar.
-- `src/app/main.cpp`: comandos `run/start/stop/autostart/install/uninstall/status/list/test`.
-  `CmdRun` é o laço da ponte: abre o canal, liga a câmera quando `ConsumerActive()`, publica
-  os JPEGs. `eoscam-bg.exe` é o mesmo código com `EOSCAM_BACKGROUND` (WIN32, log em arquivo).
-- `src/common/shared.h`: canal `Global\EosCamFrames1` (a DLL cria; o app abre), 3 slots
-  com seqlock, heartbeat do consumidor e do produtor. `EOSCAM_LOCAL=1` usa `Local\`.
-- `src/source/*`: `eoscam-source.dll` (Frame Server, LocalService, sessão 0). Decodifica o
-  JPEG com WIC, recorta 16:9 **ancorado na base**, escala para 1280×720 e converte para NV12.
-  Mostra telas de aviso (`FrameRenderer::RenderMessage`) quando não há quadros.
+- `src/app/canon_camera.*`: PTP over WPD (`PtpDevice`, `CanonCamera`). Live View via
+  `GetViewFinderData` (1056×704 JPEG, 4:2:2, ~29 fps). Turns Live View back on by itself if it stops.
+- `src/app/main.cpp`: commands `run/start/stop/autostart/install/uninstall/status/list/test`.
+  `CmdRun` is the bridge loop: opens the channel, turns the camera on when `ConsumerActive()`, publishes
+  the JPEGs. `eoscam-bg.exe` is the same code with `EOSCAM_BACKGROUND` (WIN32, log to a file).
+- `src/common/shared.h`: channel `Global\EosCamFrames1` (the DLL creates it; the app opens it), 3 slots
+  with a seqlock, consumer and producer heartbeats. `EOSCAM_LOCAL=1` uses `Local\`.
+- `src/source/*`: `eoscam-source.dll` (Frame Server, LocalService, session 0). Decodes the JPEG with
+  WIC, crops 16:9 **anchored at the bottom**, scales to 1280×720 and converts to NV12. Shows warning
+  screens (`FrameRenderer::RenderMessage`) when there are no frames.
 
-## Arquitetura v2
+## v2 architecture
 
 ```
-Câmera ──PTP──> ponte (sessão do usuário)
-                 ├─ thread de captura/processamento (laço atual de CmdRun, ampliado)
-                 │    JPEG → decodifica (WIC, CPU) → recorte 16:9 pela base (1056×594)
-                 │    → [Denoise] → [Artifact Reduction]            (GPU, Maxine, na resolução de origem)
-                 │    → [Green Screen: máscara]                      (GPU, Maxine, na resolução de origem)
-                 │    → Super Resolution 2× (2112×1188) ou aumento simples
-                 │    → reduz para 1920×1080
-                 │    → ajustes de imagem (brilho/contraste/gamma/temperatura/tom/saturação)
-                 │    → composição do fundo (cor sólida / desfoque / imagem) usando a máscara
-                 │    → NV12 1920×1080 → canal compartilhado
-                 ├─ thread de UI (bandeja + painel), só no eoscam-bg
-                 └─ fila de comandos PTP para ajustes da câmera (executada pela thread de captura,
-                    que é a única dona da sessão PTP)
-DLL (Frame Server): copia o NV12 pronto para a amostra. Só decodifica/renderiza as telas de aviso.
+Camera ──PTP──> bridge (user session)
+                 ├─ capture/processing thread (the current CmdRun loop, extended)
+                 │    JPEG → decode (WIC, CPU) → 16:9 crop from the bottom (1056×594)
+                 │    → [Denoise] → [Artifact Reduction]            (GPU, Maxine, at the source resolution)
+                 │    → [Green Screen: mask]                         (GPU, Maxine, at the source resolution)
+                 │    → Super Resolution 2× (2112×1188) or plain upscaling
+                 │    → downscale to 1920×1080
+                 │    → image adjustments (brightness/contrast/gamma/temperature/tint/saturation)
+                 │    → background compositing (solid color / blur / image) using the mask
+                 │    → NV12 1920×1080 → shared channel
+                 ├─ UI thread (tray + panel), eoscam-bg only
+                 └─ PTP command queue for the camera settings (run by the capture thread, which is
+                    the only owner of the PTP session)
+DLL (Frame Server): copies the ready NV12 into the sample. Only decodes/renders the warning screens.
 ```
 
-### Canal compartilhado (layout v2)
+### Shared channel (v2 layout)
 
-- Novos nomes: `Global\EosCamFrames2` / `Global\EosCamFrameReady2` (e `Local\…2`). Assim a
-  v1 instalada e a v2 nunca se confundem. `kLayoutVersion = 2`.
-- Os slots passam a conter **NV12 1920×1080** (3.110.400 bytes). Coloque no cabeçalho do
-  slot: `format` (fourcc NV12), `width`, `height`, `stride`. Tamanho máximo do slot: 4 MB.
-- O resto do protocolo (seqlock, heartbeats, estados do produtor) não muda.
+- New names: `Global\EosCamFrames2` / `Global\EosCamFrameReady2` (and `Local\…2`). This way an
+  installed v1 and v2 never get mixed up. `kLayoutVersion = 2`.
+- The slots now hold **NV12 1920×1080** (3,110,400 bytes). Put in the slot header: `format` (NV12
+  fourcc), `width`, `height`, `stride`. Maximum slot size: 4 MB.
+- The rest of the protocol (seqlock, heartbeats, producer states) does not change.
 
 ### DLL
 
-- Oferece **apenas NV12 1920×1080 @ 30 fps** (`kSizes`). Mantenha o comentário explicando
-  por que há um único formato (programas abriam em 4:3 e trocavam depois).
-- `RenderJpeg` deixa de ser usado no caminho normal. A DLL copia o NV12 do slot (validando
-  o tamanho). Mantenha `RenderMessage` para as telas de aviso, agora em 1080p.
-- Se o slot vier num tamanho diferente do formato negociado, mostre uma tela de aviso
-  ("versões incompatíveis do eoscam: reinstale"), nunca quebre.
+- Offers **only NV12 1920×1080 @ 30 fps** (`kSizes`). Keep the comment explaining why there is a
+  single format (programs opened at 4:3 and switched later).
+- `RenderJpeg` is no longer used on the normal path. The DLL copies the NV12 from the slot (validating
+  the size). Keep `RenderMessage` for the warning screens, now at 1080p.
+- If the slot comes in a size different from the negotiated format, show a warning screen
+  ("incompatible eoscam versions: reinstall"), never crash.
 
-### Pipeline na ponte
+### Pipeline in the bridge
 
-Crie um módulo novo, por exemplo `src/app/pipeline.{h,cpp}` (classe `FramePipeline`),
-mais `src/app/maxine.{h,cpp}` (carregamento e encapsulamento dos efeitos).
+Create a new module, for example `src/app/pipeline.{h,cpp}` (class `FramePipeline`), plus
+`src/app/maxine.{h,cpp}` (loading and wrapping of the effects).
 
 **Maxine Video Effects SDK**
-- O runtime está instalado em `C:\Program Files\NVIDIA Corporation\NVIDIA Video Effects`
-  (versão 0.7.6, `NVVideoEffects.dll` 0.8.1). Os modelos (em `models\`) existem para a GPU
-  do usuário (sm 89 = RTX 4080): `SR_2x/3x/4x_{con,agg}`, `AR-{con,agg}`,
-  `Denoise-{con,agg}` e `AIGS_288x512_*`.
-- Os headers e os "proxies" (que carregam a DLL dinamicamente) estão no repositório público
-  **NVIDIA/MAXINE-VFX-SDK** no GitHub (licença MIT): `nvvfx/include/` (`nvVideoEffects.h`,
-  `nvCVImage.h`, `nvCVStatus.h`, …) e `nvvfx/src/` (`nvVideoEffectsProxy.cpp`,
-  `nvCVImageProxy.cpp`). Use a tag/versão mais próxima de 0.7.6. Copie só os arquivos
-  necessários para `third_party/maxine/` (com o LICENSE) e versione-os.
-- Localize o runtime pela variável `NV_VIDEO_EFFECTS_PATH` ou, se ela não existir, pelo
-  caminho padrão acima. Defina `NVVFX_MODEL_DIRECTORY` com a pasta `models`.
-- **Não dependa do CUDA Toolkit nem do nvcc.** Use só a API do SDK: `NvCVImage_Alloc`,
-  `NvCVImage_Transfer` (CPU↔GPU e conversões de formato, u8↔f32, chunky↔planar),
-  `NvVFX_CudaStreamCreate` e os efeitos. O que o SDK não fizer, faça na CPU.
-- Efeitos e modos (confirme a semântica de `NVVFX_MODE` nos headers e na documentação):
-  - Denoise: off / con / agg. É temporal, então mantenha o objeto de estado
-    (`NVVFX_STATE`) e o reinicie quando a resolução ou o modo mudar.
+- The runtime is installed in `C:\Program Files\NVIDIA Corporation\NVIDIA Video Effects` (version
+  0.7.6, `NVVideoEffects.dll` 0.8.1). The models (in `models\`) exist for the user's GPU (sm 89 = RTX
+  4080): `SR_2x/3x/4x_{con,agg}`, `AR-{con,agg}`, `Denoise-{con,agg}` and `AIGS_288x512_*`.
+- The headers and the "proxies" (which load the DLL dynamically) are in the public
+  **NVIDIA/MAXINE-VFX-SDK** repository on GitHub (MIT license): `nvvfx/include/` (`nvVideoEffects.h`,
+  `nvCVImage.h`, `nvCVStatus.h`, …) and `nvvfx/src/` (`nvVideoEffectsProxy.cpp`, `nvCVImageProxy.cpp`).
+  Use the tag/version closest to 0.7.6. Copy only the needed files to `third_party/maxine/` (with the
+  LICENSE) and version them.
+- Locate the runtime through the `NV_VIDEO_EFFECTS_PATH` variable or, if it does not exist, through the
+  default path above. Set `NVVFX_MODEL_DIRECTORY` to the `models` folder.
+- **Do not depend on the CUDA Toolkit or nvcc.** Use only the SDK API: `NvCVImage_Alloc`,
+  `NvCVImage_Transfer` (CPU↔GPU and format conversions, u8↔f32, chunky↔planar),
+  `NvVFX_CudaStreamCreate` and the effects. Whatever the SDK doesn't do, do it on the CPU.
+- Effects and modes (confirm the semantics of `NVVFX_MODE` in the headers and documentation):
+  - Denoise: off / con / agg. It is temporal, so keep the state object (`NVVFX_STATE`) and reset it
+    when the resolution or the mode changes.
   - Artifact Reduction: off / con / agg.
-  - Super Resolution 2×: off / con / agg. Com off, o aumento é bilinear/Fant comum.
-  - Green Screen (AIGS): gera a máscara na resolução de origem (antes da Super Resolution).
-    A máscara é ampliada para 1080p na composição.
-- Ao trocar um modo, recrie só o efeito afetado, numa troca "quente": o quadro atual usa o
-  efeito antigo até o novo estar carregado (`NvVFX_Load` pode levar segundos). Quando a webcam
-  é aberta, pré-carregue os efeitos ativos.
-- Se o runtime não existir ou a inicialização falhar, todo efeito de IA fica indisponível
-  (informe ao painel) e o pipeline segue na CPU: decodifica → recorta → escala para 1080p →
-  ajustes → NV12. O Green Screen fica desabilitado nesse caso.
+  - Super Resolution 2×: off / con / agg. With off, the upscaling is plain bilinear/Fant.
+  - Green Screen (AIGS): produces the mask at the source resolution (before Super Resolution). The mask
+    is upscaled to 1080p during compositing.
+- When a mode changes, recreate only the affected effect, as a "hot" swap: the current frame uses the
+  old effect until the new one is loaded (`NvVFX_Load` can take seconds). When the webcam is opened,
+  preload the enabled effects.
+- If the runtime is missing or initialization fails, every AI effect becomes unavailable (tell the
+  panel) and the pipeline carries on on the CPU: decode → crop → scale to 1080p → adjustments → NV12.
+  Green Screen is disabled in that case.
 
-**Ajustes de imagem** (sobre a imagem da câmera, antes da composição com o fundo)
-- Brilho (−100…+100), Contraste (−100…+100), Gamma (0,5…2,0, padrão 1,0),
-  Temperatura (−100…+100, quente/frio: ganhos R/B), Tom (−100…+100, verde/magenta: ganho G),
-  Saturação (0…200%, padrão 100%).
-- Implementação sugerida: uma LUT de 256 entradas por canal, recalculada só quando os valores
-  mudam (brilho, contraste, gamma, temperatura e tom), mais a saturação aplicada na conversão
-  para NV12 (escala de U/V em torno de 128) ou numa matriz RGB. Paralelize em faixas com
-  `std::thread` ou um pool simples, se for preciso para caber no orçamento.
+**Image adjustments** (on the camera image, before compositing with the background)
+- Brightness (−100…+100), Contrast (−100…+100), Gamma (0.5…2.0, default 1.0), Temperature (−100…+100,
+  warm/cool: R/B gains), Tint (−100…+100, green/magenta: G gain), Saturation (0…200%, default 100%).
+- Suggested implementation: a 256-entry LUT per channel, recomputed only when the values change
+  (brightness, contrast, gamma, temperature and tint), plus saturation applied during the NV12
+  conversion (scaling U/V around 128) or through an RGB matrix. Parallelize in bands with `std::thread`
+  or a simple pool, if needed to fit the budget.
 
-**Fundo virtual** (só com o Green Screen ligado)
-- Modos: **cor sólida** (escolhida com `ChooseColor`), **desfoque** (intensidade 0…100; use o
-  efeito `BgBlur` do SDK se estiver disponível no runtime, senão um desfoque separável na CPU
-  em resolução reduzida) e **imagem do disco** (PNG/JPG via WIC; preencha 1920×1080 com recorte
-  central, "cover"; recarregue só quando o caminho muda).
-- Composição alfa com a máscara ampliada e suavizada (evite bordas serrilhadas).
+**Virtual background** (only with Green Screen on)
+- Modes: **solid color** (picked with `ChooseColor`), **blur** (strength 0…100; use the SDK `BgBlur`
+  effect if the runtime has it, otherwise a separable blur on the CPU at reduced resolution) and **image
+  from disk** (PNG/JPG via WIC; fill 1920×1080 with a center crop, "cover"; reload only when the path
+  changes).
+- Alpha compositing with the upscaled and smoothed mask (avoid jagged edges).
 
-**Orçamento de desempenho** (meça e registre no log a cada 60 s)
-- 1920×1080 a ≥ 25 fps com Super Resolution + Artifact Reduction ligados.
-- Tempo de GPU e de CPU por estágio, por média móvel (para o painel e o log).
-- Sem efeitos de IA: CPU da ponte < 25% de um núcleo.
+**Performance budget** (measure and log every 60 s)
+- 1920×1080 at ≥ 25 fps with Super Resolution + Artifact Reduction on.
+- GPU and CPU time per stage, as a moving average (for the panel and the log).
+- Without AI effects: bridge CPU < 25% of a core.
 
-### Ajustes da câmera via PTP
+### Camera settings over PTP
 
-Use os códigos e codificações do libgphoto2 (`camlibs/ptp2/ptp.h`, `ptp.c` e `config.c`)
-**como referência**; ele é LGPL, então não copie código, só valores e formatos.
+Use the libgphoto2 codes and encodings (`camlibs/ptp2/ptp.h`, `ptp.c` and `config.c`) **as a
+reference**; it is LGPL, so don't copy code, only values and formats.
 
-- Valores atuais e listas de valores permitidos: interprete os registros de `GetEvent`
-  (0x9116): `PropValueChanged` (0xC189) e `AvailListChanged` (0xC18A). Mantenha um cache
-  `prop → valor atual + valores permitidos` e alimente o painel a partir dele.
-- Escreva com `SetDevicePropValueEx` (0x9110), já usado em `CanonCamera::SetPropEx`.
-- Propriedades no painel (só as que a câmera anunciar; as demais aparecem desabilitadas):
-  - Compensação de exposição (`ExpCompensation`, 0xD104; codificação em terços de EV)
+- Current values and lists of allowed values: parse the `GetEvent` (0x9116) records:
+  `PropValueChanged` (0xC189) and `AvailListChanged` (0xC18A). Keep a cache
+  `prop → current value + allowed values` and feed the panel from it.
+- Write with `SetDevicePropValueEx` (0x9110), already used in `CanonCamera::SetPropEx`.
+- Properties on the panel (only those the camera announces; the others appear disabled):
+  - Exposure compensation (`ExpCompensation`, 0xD104; encoded in thirds of EV)
   - ISO (0xD103)
-  - Balanço de branco (0xD109): automático, luz do dia, sombra, nublado, tungstênio,
-    fluorescente, flash, personalizado; e temperatura de cor em Kelvin (verifique o código no
-    libgphoto2) quando o modo for Kelvin
-  - Picture Style (0xD110): Padrão, Retrato, Paisagem, Neutro, Fiel, Monocromático
-  - Parâmetros do Picture Style ativo (contraste, saturação, tom de cor, nitidez), se o
-    modelo permitir (verifique como o libgphoto2 trata as propriedades `PictureStyle*`)
-  - Auto Lighting Optimizer, se anunciado
-- Os comandos do painel entram numa fila thread-safe, executada pela thread de captura entre
-  um quadro e outro. Falhas aparecem no painel ("a câmera recusou: modo automático?").
-- **Os ajustes da câmera não são persistidos pelo eoscam**: a própria câmera os guarda.
+  - White balance (0xD109): auto, daylight, shade, cloudy, tungsten, fluorescent, flash, custom; and
+    color temperature in Kelvin (check the code in libgphoto2) when the mode is Kelvin
+  - Picture Style (0xD110): Standard, Portrait, Landscape, Neutral, Faithful, Monochrome
+  - Parameters of the active Picture Style (contrast, saturation, color tone, sharpness), if the model
+    allows it (check how libgphoto2 handles the `PictureStyle*` properties)
+  - Auto Lighting Optimizer, if announced
+- Panel commands go into a thread-safe queue, run by the capture thread between frames. Failures show
+  up on the panel ("the camera refused: automatic mode?").
+- **eoscam does not persist the camera settings**: the camera itself keeps them.
 
-### Configurações
+### Settings
 
-- Arquivo `%APPDATA%\EosCam\settings.ini` (`GetPrivateProfileString`/`WritePrivateProfileString`),
-  com as seções `[image]`, `[effects]`, `[background]` e `[ui]`.
-- Um struct `Settings` com contador de versão, protegido por mutex, que o pipeline consulta
-  uma vez por quadro. Ao mudar, grave em disco com debounce (~500 ms).
+- File `%APPDATA%\EosCam\settings.ini` (`GetPrivateProfileString`/`WritePrivateProfileString`), with the
+  sections `[image]`, `[effects]`, `[background]` and `[ui]`.
+- A `Settings` struct with a version counter, protected by a mutex, that the pipeline reads once per
+  frame. On change, write to disk with a debounce (~500 ms).
 
-### Painel (só no `eoscam-bg.exe`)
+### Panel (`eoscam-bg.exe` only)
 
-- **Ícone na bandeja** (`Shell_NotifyIcon`). Menu: "Abrir painel", "Iniciar com o Windows"
-  (marcado conforme `HKCU\…\Run\EosCam`), "Sair". Clique duplo abre o painel.
-- **Janela** em Win32 nativo (sem dependências novas), com uma prévia ao vivo à esquerda
-  (~640×360, ~15 fps, a partir do último quadro processado em memória, convertido para BGRA e
-  desenhado com `StretchDIBits`) e controles à direita, em grupos:
-  - **Imagem:** controles deslizantes de brilho, contraste, gamma, temperatura, tom e
-    saturação, cada um com o valor ao lado e duplo clique para zerar; botão "Restaurar padrões".
-  - **Efeitos de IA:** Super Resolution (off/con/agg), Artifact Reduction (off/con/agg),
-    Denoise (off/con/agg). Desabilitados, com o motivo, se o Maxine não estiver disponível.
-  - **Fundo:** Green Screen on/off; modo (cor sólida / desfoque / imagem); botão "Cor…",
-    intensidade do desfoque, botão "Imagem…" (`IFileOpenDialog`, PNG/JPG) com o nome do arquivo.
-  - **Câmera:** compensação de exposição, ISO, balanço de branco (com Kelvin quando aplicável),
-    Picture Style e seus parâmetros, ALO.
-  - **Rodapé de status:** estado da ponte (aguardando / ao vivo / sem câmera), fps de
-    entrada/saída e tempo de processamento por quadro.
-- **Com o painel aberto, a ponte liga o Live View** mesmo sem programa usando a webcam (o
-  painel conta como consumidor), para dar para ajustar antes de uma chamada. Ao fechar, volta
-  à regra normal (desliga 5 s depois de não haver consumidor).
-- Novo comando `eoscam panel`: abre o painel do `eoscam-bg` já em execução (encontre a janela
-  oculta dele e envie uma mensagem); se ele não estiver rodando, inicie-o e depois abra.
-- O laço de captura passa a rodar numa thread própria no `eoscam-bg`; a thread principal roda
-  a fila de mensagens. O `eoscam run` (console) usa o mesmo pipeline, sem bandeja nem painel.
+- **Tray icon** (`Shell_NotifyIcon`). Menu: "Open panel", "Start with Windows" (checked according to
+  `HKCU\…\Run\EosCam`), "Exit". Double-click opens the panel.
+- **Window** in native Win32 (no new dependencies), with a live preview on the left (~640×360, ~15 fps,
+  from the last processed frame in memory, converted to BGRA and drawn with `StretchDIBits`) and
+  controls on the right, in groups:
+  - **Image:** sliders for brightness, contrast, gamma, temperature, tint and saturation, each with its
+    value next to it and double-click to reset; a "Restore defaults" button.
+  - **AI effects:** Super Resolution (off/con/agg), Artifact Reduction (off/con/agg), Denoise
+    (off/con/agg). Disabled, with the reason, if Maxine is not available.
+  - **Background:** Green Screen on/off; mode (solid color / blur / image); a "Color…" button, blur
+    strength, an "Image…" button (`IFileOpenDialog`, PNG/JPG) with the file name.
+  - **Camera:** exposure compensation, ISO, white balance (with Kelvin when applicable), Picture Style
+    and its parameters, ALO.
+  - **Status bar:** bridge state (waiting / live / no camera), input/output fps and processing time per
+    frame.
+- **With the panel open, the bridge turns Live View on** even when no program is using the webcam (the
+  panel counts as a consumer), so settings can be adjusted before a call. On close, back to the normal
+  rule (off 5 s after there is no consumer).
+- New `eoscam panel` command: opens the panel of the already running `eoscam-bg` (find its hidden window
+  and send it a message); if it is not running, start it and then open the panel.
+- The capture loop now runs on its own thread in `eoscam-bg`; the main thread runs the message queue.
+  `eoscam run` (console) uses the same pipeline, without tray or panel.
 
-## Fora do escopo
+## Out of scope
 
-- Instalar a v2 em `C:\Program Files` (precisa de administrador; o usuário/orquestrador faz).
-- Controles da câmera expostos aos outros programas via `IKsControl`.
+- Installing v2 in `C:\Program Files` (needs administrator rights; the user/orchestrator does it).
+- Camera controls exposed to other programs through `IKsControl`.
 
-## Critérios de aceite
+## Acceptance criteria
 
-1. Compila sem avisos (`/W4`) com `cmake --build build --config Release`.
-2. Teste local (sem admin, ver "Como testar"): `eoscam test --direct --size 1920x1080` entrega
-   ≥ 25 fps com Super Resolution + Artifact Reduction ligados no `settings.ini`, e o quadro
-   salvo tem boa aparência (abra o JPG e confira: recorte pela base, cores, bordas da máscara).
-3. Cada efeito, modo e modo de fundo testado ao menos uma vez, com um quadro salvo como evidência
-   numa pasta temporária de testes.
-4. Sem o Maxine (simule, por exemplo, com `NV_VIDEO_EFFECTS_PATH` apontando para uma pasta
-   vazia), o pipeline cai para a CPU sem quebrar.
-5. O painel abre e fecha, os ajustes refletem na prévia e persistem entre reinicializações, e a
-   bandeja funciona. Faça uma captura de tela da janela (`PrintWindow`) e salve-a como evidência.
-6. Ajustes da câmera: a lista de valores vem da câmera; mudar a compensação de exposição e o
-   balanço de branco muda a imagem (compare quadros salvos).
-7. README atualizado.
+1. Builds without warnings (`/W4`) with `cmake --build build --config Release`.
+2. Local test (no admin, see "How to test"): `eoscam test --direct --size 1920x1080` delivers ≥ 25 fps
+   with Super Resolution + Artifact Reduction on in `settings.ini`, and the saved frame looks good (open
+   the JPG and check: crop from the bottom, colors, mask edges).
+3. Every effect, mode and background mode tested at least once, with a frame saved as evidence in a
+   temporary test folder.
+4. Without Maxine (simulate it, for example, with `NV_VIDEO_EFFECTS_PATH` pointing to an empty folder),
+   the pipeline falls back to the CPU without crashing.
+5. The panel opens and closes, the settings show up in the preview and persist across restarts, and the
+   tray works. Take a screenshot of the window (`PrintWindow`) and save it as evidence.
+6. Camera settings: the list of values comes from the camera; changing the exposure compensation and the
+   white balance changes the image (compare saved frames).
+7. README updated.
 
-## Como testar sem administrador
+## How to test without administrator rights
 
-- Antes de tudo, pare a ponte instalada (ela segura o mutex `Local\EosCamProducer`):
-  `& "C:\Program Files\EosCam\eoscam.exe" stop`. **Ao terminar, religue-a:**
-  `& "C:\Program Files\EosCam\eoscam.exe" start` (a webcam do usuário depende dela).
-- Pipeline completo sem Frame Server: com `$env:EOSCAM_LOCAL='1'`, rode
-  `build\Release\eoscam.exe run` em segundo plano e `build\Release\eoscam.exe test --direct`.
-- A câmera deve estar ligada; ela já está conectada por USB.
-- **Não** rode `scripts\deploy.ps1` nem nada que peça UAC.
+- First of all, stop the installed bridge (it holds the `Local\EosCamProducer` mutex):
+  `& "C:\Program Files\EosCam\eoscam.exe" stop`. **When done, start it again:**
+  `& "C:\Program Files\EosCam\eoscam.exe" start` (the user's webcam depends on it).
+- Full pipeline without the Frame Server: with `$env:EOSCAM_LOCAL='1'`, run
+  `build\Release\eoscam.exe run` in the background and `build\Release\eoscam.exe test --direct`.
+- The camera must be on; it is already connected over USB.
+- Do **not** run `scripts\deploy.ps1` or anything that asks for UAC.

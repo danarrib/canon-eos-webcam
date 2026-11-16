@@ -238,7 +238,10 @@ bool FramePipeline::Impl::Init() {
     if (FAILED(hr)) Log("pipeline: falha ao iniciar o WIC (hr=0x%08lX)", (unsigned long)hr);
     SYSTEM_INFO si;
     GetSystemInfo(&si);
-    pool = std::make_unique<ThreadPool>(int(std::min<DWORD>(4, std::max<DWORD>(1, si.dwNumberOfProcessors))));
+    int threads = int(std::min<DWORD>(4, std::max<DWORD>(1, si.dwNumberOfProcessors)));
+    wchar_t tv[8];
+    if (GetEnvironmentVariableW(L"EOSCAM_THREADS", tv, 8) > 0 && tv[0] >= L'1' && tv[0] <= L'8') threads = tv[0] - L'0';
+    pool = std::make_unique<ThreadPool>(threads);
 
     wchar_t v[8];
     forceCpuBlur = GetEnvironmentVariableW(L"EOSCAM_FORCE_CPU_BLUR", v, 8) > 0 && v[0] == L'1';

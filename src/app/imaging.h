@@ -25,7 +25,9 @@ public:
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
     int Size() const { return int(workers_.size()) + 1; }
-    void ParallelFor(int n, const std::function<void(int)>& fn);
+    // parallel = false executa tudo na thread chamadora: acordar threads custa mais CPU do que ganha quando
+    // o trabalho é pequeno (o caminho sem efeitos de IA, a ~29 quadros/s).
+    void ParallelFor(int n, const std::function<void(int)>& fn, bool parallel = true);
 
 private:
     void Work();

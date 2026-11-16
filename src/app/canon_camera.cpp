@@ -5,6 +5,7 @@
 #include <WpdMtpExtensions.h>
 
 #include <algorithm>
+#include <cstdio>
 
 using Microsoft::WRL::ComPtr;
 
@@ -283,6 +284,94 @@ PtpResult CanonCamera::SetPropEx(uint32_t prop, uint32_t value) {
     return dev_.Write(PTP_OC_CANON_EOS_SetDevicePropValueEx, {}, d);
 }
 
+PtpResult CanonCamera::WriteProp(uint32_t prop, uint32_t value) {
+    PtpResult r = SetPropEx(prop, value);
+    if (r.ok()) {
+        std::lock_guard<std::mutex> lk(propsMu_);
+        PropState& p = props_[prop];
+        p.hasValue = true;
+        p.value = value;  // otimista: o evento PropValueChanged confirma (ou corrige) em seguida
+        propsGen_++;
+    }
+    return r;
+}
+
+PtpResult CanonCamera::WritePropWords(uint32_t prop, const std::vector<uint32_t>& words) {
+    std::vector<BYTE> d(8 + words.size() * 4);
+    auto put = [&](size_t i, uint32_t v) {
+        d[i] = BYTE(v); d[i + 1] = BYTE(v >> 8); d[i + 2] = BYTE(v >> 16); d[i + 3] = BYTE(v >> 24);
+    };
+    put(0, uint32_t(d.size()));
+    put(4, prop);
+    for (size_t i = 0; i < words.size(); i++) put(8 + i * 4, words[i]);
+    return dev_.Write(PTP_OC_CANON_EOS_SetDevicePropValueEx, {}, d);
+}
+
+bool CanonCamera::GetProp(uint32_t prop, PropState& out) const {
+    std::lock_guard<std::mutex> lk(propsMu_);
+    auto it = props_.find(prop);
+    if (it == props_.end()) return false;
+    out = it->second;
+    return it->second.hasValue || it->second.hasList;
+}
+
+// Interpreta o buffer de GetEvent: sequência de registros [u32 tamanho][u32 tipo][dados...], terminada
+// por um registro vazio (tamanho 8, tipo 0). Só os dois tipos de propriedade interessam aqui:
+//   0xC189 PropValueChanged: [8: código da propriedade][12: valor (u32) ou estrutura]
+//   0xC18A AvailListChanged: [8: código][12: tipo de dado][16: quantidade][20: valores, 4 bytes cada]
+void CanonCamera::ParseEvents(const std::vector<BYTE>& d) {
+    constexpr uint32_t kPropValueChanged = 0xC189, kAvailListChanged = 0xC18A;
+    bool changed = false;
+    size_t i = 0;
+    while (i + 8 <= d.size()) {
+        uint32_t sz = Rd32(d, i), ty = Rd32(d, i + 4);
+        if (sz == 8 && ty == 0) break;
+        if (sz < 8 || i + sz > d.size()) break;
+        if (dumpEvents_ && (ty == kPropValueChanged || ty == kAvailListChanged) && sz >= 12) {
+            char hex[400];
+            size_t n = std::min<size_t>(sz, 96), o = 0;
+            for (size_t k = 12; k < n && o + 3 < sizeof hex; k++)
+                o += size_t(snprintf(hex + o, sizeof hex - o, "%02X ", d[i + k]));
+            hex[o] = 0;
+            printf("evento %04X prop %04X (%u bytes): %s\n", ty, Rd32(d, i + 8), sz, hex);
+            fflush(stdout);
+        }
+        if (ty == kPropValueChanged && sz >= 16) {
+            uint32_t prop = Rd32(d, i + 8);
+            std::lock_guard<std::mutex> lk(propsMu_);
+            PropState& p = props_[prop];
+            uint32_t v = Rd32(d, i + 12);
+            p.raw.assign(d.begin() + ptrdiff_t(i) + 12, d.begin() + ptrdiff_t(i + sz));
+            if (!p.hasValue || p.value != v) changed = true;
+            p.hasValue = true;
+            p.value = v;
+        } else if (ty == kAvailListChanged && sz >= 20) {
+            uint32_t prop = Rd32(d, i + 8);
+            uint32_t count = Rd32(d, i + 16);
+            if (count <= 4096 && size_t(20) + size_t(count) * 4 <= sz) {
+                std::lock_guard<std::mutex> lk(propsMu_);
+                PropState& p = props_[prop];
+                std::vector<uint32_t> list(count);
+                for (uint32_t k = 0; k < count; k++) list[k] = Rd32(d, i + 20 + size_t(k) * 4);
+                if (!p.hasList || p.list != list) changed = true;
+                p.hasList = true;
+                p.list = std::move(list);
+            }
+        }
+        i += sz;
+    }
+    if (changed) propsGen_++;
+}
+
+bool CanonCamera::PollEvents() {
+    if (!connected_) return false;
+    uint32_t before = propsGen_;
+    auto r = dev_.Read(PTP_OC_CANON_EOS_GetEvent);
+    lastEventTick_ = GetTickCount64();
+    if (r.ok()) ParseEvents(r.data);
+    return propsGen_ != before;
+}
+
 bool CanonCamera::Connect(std::string& error) {
     Disconnect();
     const WpdDeviceEntry* sel = nullptr;
@@ -299,6 +388,10 @@ bool CanonCamera::Connect(std::string& error) {
         return false;
     }
     name_ = sel->name;
+    {
+        std::lock_guard<std::mutex> lk(propsMu_);
+        props_.clear();
+    }
 
     if (!EnableLiveView()) {
         char b[128];
@@ -309,6 +402,10 @@ bool CanonCamera::Connect(std::string& error) {
         dev_.Exec(PTP_OC_CANON_EOS_SetRemoteMode, {0});
         dev_.Close();
         return false;
+    }
+    {
+        wchar_t v[8];
+        dumpEvents_ = GetEnvironmentVariableW(L"EOSCAM_DUMP_EVENTS", v, 8) > 0 && v[0] == L'1';
     }
     connected_ = true;
     consecutiveErrors_ = 0;
@@ -325,7 +422,10 @@ bool CanonCamera::EnableLiveView() {
     lastCode_ = r.code;
     if (!r.ok()) return false;
     dev_.Exec(PTP_OC_CANON_EOS_SetEventMode, {1});
-    dev_.Read(PTP_OC_CANON_EOS_GetEvent);
+    {
+        auto ev = dev_.Read(PTP_OC_CANON_EOS_GetEvent);  // o primeiro GetEvent despeja o estado completo
+        if (ev.ok()) ParseEvents(ev.data);
+    }
     SetPropEx(PTP_DPC_CANON_EOS_EVFMode, 1);
     r = SetPropEx(PTP_DPC_CANON_EOS_EVFOutputDevice, 2);
     lastHr_ = r.hr;
@@ -347,9 +447,8 @@ void CanonCamera::Disconnect() {
 CanonCamera::Frame CanonCamera::GetFrame(std::vector<uint8_t>& jpeg) {
     if (!connected_) return Frame::Error;
     uint64_t now = GetTickCount64();
-    if (now - lastEventTick_ > 1000) {  // esvazia a fila de eventos da câmera
-        dev_.Read(PTP_OC_CANON_EOS_GetEvent);
-        lastEventTick_ = now;
+    if (now - lastEventTick_ > eventIntervalMs_) {  // esvazia a fila de eventos da câmera
+        PollEvents();
     }
 
     // Sem quadros por muito tempo: alguém desligou o Live View (ex.: o driver do EOS Webcam

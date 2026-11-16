@@ -126,7 +126,6 @@ bool SettingsStore::ReadFile(Settings& s) const {
 
     s.ui.x = ReadInt(L"ui", L"x", -1, p);
     s.ui.y = ReadInt(L"ui", L"y", -1, p);
-    s.ui.showPreview = ReadInt(L"ui", L"preview", 1, p) != 0;
     return true;
 }
 
@@ -228,7 +227,6 @@ void SettingsStore::SaveLocked(const Settings& s) {
 
     WriteInt(L"ui", L"x", s.ui.x, p);
     WriteInt(L"ui", L"y", s.ui.y, p);
-    WriteInt(L"ui", L"preview", s.ui.showPreview ? 1 : 0, p);
     lastStamp_ = FileStamp();
 }
 

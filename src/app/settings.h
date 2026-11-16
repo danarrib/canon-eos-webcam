@@ -63,7 +63,6 @@ struct BackgroundSettings {
 
 struct UiSettings {
     int x = -1, y = -1;     // posição da janela do painel (-1 = padrão do Windows)
-    bool showPreview = true;
 };
 
 struct Settings {

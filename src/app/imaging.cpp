@@ -1,5 +1,8 @@
 #include "imaging.h"
 
+#include <immintrin.h>
+#include <intrin.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -38,8 +41,8 @@ void ThreadPool::Work() {
     }
 }
 
-void ThreadPool::ParallelFor(int n, const std::function<void(int)>& fn) {
-    if (workers_.empty() || n <= 1) {
+void ThreadPool::ParallelFor(int n, const std::function<void(int)>& fn, bool parallel) {
+    if (!parallel || workers_.empty() || n <= 1) {
         for (int i = 0; i < n; i++) fn(i);
         return;
     }
@@ -125,13 +128,32 @@ inline VPos VertPos(int y, int sh, int dh) {
     return {a, std::min(a + 1, sh - 1), int(std::lround(f * 256))};
 }
 
+bool HasAvx2();
+
 inline void VBlend(const uint8_t* r0, const uint8_t* r1, int fy, uint8_t* dst, int n) {
     if (fy == 0) {
         std::memcpy(dst, r0, size_t(n));
         return;
     }
-    const uint16_t f1 = uint16_t(fy), f0 = uint16_t(256 - fy);
-    for (int i = 0; i < n; i++) dst[i] = uint8_t((uint16_t(r0[i]) * f0 + uint16_t(r1[i]) * f1 + 128) >> 8);
+    int i = 0;
+    if (HasAvx2()) {
+        const __m256i f0 = _mm256_set1_epi16(short(256 - fy)), f1 = _mm256_set1_epi16(short(fy)),
+                      c128 = _mm256_set1_epi16(128), zero = _mm256_setzero_si256();
+        for (; i + 32 <= n; i += 32) {
+            __m256i a = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r0 + i));
+            __m256i b = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(r1 + i));
+            __m256i lo = _mm256_add_epi16(_mm256_add_epi16(_mm256_mullo_epi16(_mm256_unpacklo_epi8(a, zero), f0),
+                                                           _mm256_mullo_epi16(_mm256_unpacklo_epi8(b, zero), f1)),
+                                          c128);
+            __m256i hi = _mm256_add_epi16(_mm256_add_epi16(_mm256_mullo_epi16(_mm256_unpackhi_epi8(a, zero), f0),
+                                                           _mm256_mullo_epi16(_mm256_unpackhi_epi8(b, zero), f1)),
+                                          c128);
+            _mm256_storeu_si256(reinterpret_cast<__m256i*>(dst + i),
+                                _mm256_packus_epi16(_mm256_srli_epi16(lo, 8), _mm256_srli_epi16(hi, 8)));
+        }
+    }
+    const uint16_t u1 = uint16_t(fy), u0 = uint16_t(256 - fy);
+    for (; i < n; i++) dst[i] = uint8_t((uint16_t(r0[i]) * u0 + uint16_t(r1[i]) * u1 + 128) >> 8);
 }
 
 inline void HResample3(const uint8_t* v, const HTable& t, uint8_t* out) {
@@ -150,7 +172,50 @@ inline void HResample3(const uint8_t* v, const HTable& t, uint8_t* out) {
     }
 }
 
+// A CPU tem AVX2 (e o sistema operacional o habilita)?
+bool HasAvx2() {
+    static const bool ok = [] {
+        int r[4];
+        __cpuid(r, 0);
+        if (r[0] < 7) return false;
+        __cpuidex(r, 1, 0);
+        if (!(r[2] & (1 << 27)) || !(r[2] & (1 << 28))) return false;  // OSXSAVE e AVX
+        if ((_xgetbv(0) & 6) != 6) return false;                       // estado YMM habilitado
+        __cpuidex(r, 7, 0);
+        return (r[1] & (1 << 5)) != 0;
+    }();
+    return ok;
+}
+
+// Reamostragem horizontal de um plano com 8 pixels por vez. Um gather de 32 bits em i0 já traz os dois
+// vizinhos (i0 e i0+1; em i1 != i0+1, na borda direita, o peso é zero). v precisa ter 3 bytes de folga.
+void HResample1Avx2(const uint8_t* v, const HTable& t, uint8_t* out) {
+    const int n = t.dstW;
+    const __m256i m255 = _mm256_set1_epi32(255), c256 = _mm256_set1_epi32(256), c128 = _mm256_set1_epi32(128);
+    int x = 0;
+    for (; x + 8 <= n; x += 8) {
+        __m256i idx = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&t.i0[size_t(x)]));
+        __m256i g = _mm256_i32gather_epi32(reinterpret_cast<const int*>(v), idx, 1);
+        __m256i a = _mm256_and_si256(g, m255);
+        __m256i b = _mm256_and_si256(_mm256_srli_epi32(g, 8), m255);
+        __m256i w = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(&t.w[size_t(x)])));
+        __m256i r = _mm256_add_epi32(
+            _mm256_add_epi32(_mm256_mullo_epi32(a, _mm256_sub_epi32(c256, w)), _mm256_mullo_epi32(b, w)), c128);
+        r = _mm256_srli_epi32(r, 8);
+        __m128i p16 = _mm_packus_epi32(_mm256_castsi256_si128(r), _mm256_extracti128_si256(r, 1));
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(out + x), _mm_packus_epi16(p16, p16));
+    }
+    for (; x < n; x++) {
+        int w1 = t.w[size_t(x)], w0 = 256 - w1;
+        out[x] = uint8_t((v[t.i0[size_t(x)]] * w0 + v[t.i1[size_t(x)]] * w1 + 128) >> 8);
+    }
+}
+
 inline void HResample1(const uint8_t* v, const HTable& t, uint8_t* out) {
+    if (HasAvx2()) {
+        HResample1Avx2(v, t, out);
+        return;
+    }
     const int n = t.dstW;
     for (int x = 0; x < n; x++) {
         int w1 = t.w[size_t(x)], w0 = 256 - w1;
@@ -204,7 +269,7 @@ struct Scratch {
     std::vector<uint8_t> tmp, rowY, rowU, rowV, aY, aU, bgY, bgU, bgV;
     void Ensure(int vw) {
         auto fit = [](std::vector<uint8_t>& v, size_t n) { if (v.size() < n) v.resize(n); };
-        fit(tmp, size_t(vw));
+        fit(tmp, size_t(vw) + 16);  // folga para o gather do AVX2
         fit(rowY, kOutW);
         fit(rowU, kOutW / 2);
         fit(rowV, kOutW / 2);
@@ -310,6 +375,8 @@ void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj,
     const int pairs = h / 2;
     const int perBand = 16;
     const int n = (pairs + perBand - 1) / perBand;
+    // imagens pequenas sem ajustes (o caminho padrão) ficam numa thread só: é o que menos gasta CPU
+    const bool par = useAdj || size_t(w) * h > 1'000'000;
     pool.ParallelFor(n, [&](int band) {
         int p0 = band * perBand, p1 = std::min(pairs, p0 + perBand);
         for (int pr = p0; pr < p1; pr++) {
@@ -340,7 +407,7 @@ void BgrToYuv(const uint8_t* bgr, int w, int h, int pitch, const AdjustLut* adj,
                 dv[x / 2] = CrOf(sr, sg, sb);
             }
         }
-    });
+    }, par);
 }
 
 void RenderFinal(const FinalParams& p, ThreadPool& pool) {
@@ -379,7 +446,7 @@ void RenderFinal(const FinalParams& p, ThreadPool& pool) {
         int ys = i * rowsPerBand;
         int ye = std::min(kOutH, ys + rowsPerBand);
         if (ys < ye) RenderBand(c, ys, ye);
-    });
+    }, p.sw * p.sh > 1'000'000 || c.useBg || (p.adj && !p.adj->identity));
 }
 
 // ---------------------------------------------------------------- máscara, desfoque, fundo

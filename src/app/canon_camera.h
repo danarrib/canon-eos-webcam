@@ -7,6 +7,8 @@
 
 #include <cstdint>
 #include <initializer_list>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,27 @@ private:
     Microsoft::WRL::ComPtr<IPortableDevice> dev_;
 };
 
+// Códigos de propriedades Canon EOS (PTP). Valores e codificações conferidos no libgphoto2
+// (camlibs/ptp2/ptp.h e config.c), usados só como referência.
+enum : uint32_t {
+    kPropISO = 0xD103,
+    kPropExpComp = 0xD104,
+    kPropWhiteBalance = 0xD109,
+    kPropColorTemp = 0xD10A,
+    kPropPictureStyle = 0xD110,
+    kPropAlo = 0xD1C1,
+};
+
+// Última leitura de uma propriedade da câmera, alimentada pelos eventos PropValueChanged (0xC189) e
+// AvailListChanged (0xC18A) do GetEvent (0x9116).
+struct PropState {
+    bool hasValue = false;
+    uint32_t value = 0;
+    bool hasList = false;
+    std::vector<uint32_t> list;  // valores permitidos anunciados pela câmera
+    std::vector<uint8_t> raw;    // bytes do último PropValueChanged (para propriedades estruturadas)
+};
+
 class CanonCamera {
 public:
     enum class Frame { Ok, NotReady, Error };
@@ -58,9 +81,29 @@ public:
     // Busca o quadro mais recente do Live View (JPEG).
     Frame GetFrame(std::vector<uint8_t>& jpeg);
 
+    // ---- propriedades da câmera (ajustes do painel)
+    // Intervalo de leitura dos eventos (ms); o painel aberto pede um intervalo menor.
+    void SetEventInterval(DWORD ms) { eventIntervalMs_ = ms; }
+    // Esvazia a fila de eventos da câmera e atualiza o cache. Devolve true se algo mudou.
+    bool PollEvents();
+    // Cópia do estado de uma propriedade (false se a câmera nunca a anunciou). Thread-safe.
+    bool GetProp(uint32_t prop, PropState& out) const;
+    // Cópia de todas as propriedades conhecidas (diagnóstico: "eoscam cam").
+    std::map<uint32_t, PropState> AllProps() const {
+        std::lock_guard<std::mutex> lk(propsMu_);
+        return props_;
+    }
+    // Quantas vezes o cache mudou (o painel só redesenha quando muda).
+    uint32_t PropsGeneration() const { return propsGen_; }
+    // Escreve uma propriedade (SetDevicePropValueEx). 0x2001 = aceito; outros = a câmera recusou.
+    PtpResult WriteProp(uint32_t prop, uint32_t value);
+    // Escreve uma propriedade estruturada (lista de palavras de 32 bits).
+    PtpResult WritePropWords(uint32_t prop, const std::vector<uint32_t>& words);
+
 private:
     PtpResult SetPropEx(uint32_t prop, uint32_t value);
     bool EnableLiveView();
+    void ParseEvents(const std::vector<BYTE>& d);
 
     PtpDevice dev_;
     bool connected_ = false;
@@ -75,6 +118,12 @@ private:
     uint64_t connectTick_ = 0;
     int recoveries_ = 0;
     int recoveriesSinceOk_ = 0;
+
+    DWORD eventIntervalMs_ = 1000;
+    mutable std::mutex propsMu_;
+    std::map<uint32_t, PropState> props_;
+    volatile uint32_t propsGen_ = 0;
+    bool dumpEvents_ = false;
 };
 
 std::string W2U(const wchar_t* w);

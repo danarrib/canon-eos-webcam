@@ -1,4 +1,4 @@
-LIBRARY eoscam-source
+LIBRARY canon-eos-webcam-source
 EXPORTS
     DllCanUnloadNow PRIVATE
     DllGetClassObject PRIVATE

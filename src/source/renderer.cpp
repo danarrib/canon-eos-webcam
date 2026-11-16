@@ -4,7 +4,7 @@
 
 #include "color.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 HRESULT FrameRenderer::Init(UINT width, UINT height) {
     w_ = width;
@@ -70,4 +70,4 @@ void FrameRenderer::RenderMessage(const std::wstring& title, const std::wstring&
     DeleteDC(dc);
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

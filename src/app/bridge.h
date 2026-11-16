@@ -26,7 +26,7 @@
 #include "settings.h"
 #include "shared.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 struct BridgeStatus {
     ProducerState state = ProducerState::Idle;
@@ -116,4 +116,4 @@ private:
     std::atomic<double> fpsOut_{0};
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

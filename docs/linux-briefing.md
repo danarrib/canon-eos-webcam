@@ -1,4 +1,4 @@
-# Briefing: eoscam for Linux (Omarchy)
+# Briefing: canon-eos-webcam for Linux (Omarchy)
 
 ## Goal
 
@@ -9,7 +9,7 @@ Hyprland), with a single program of our own that:
 - decodes the Live View JPEG, crops it to 16:9 and delivers **1280×720 at ~30 fps**;
 - publishes the image as a **PipeWire virtual camera** (a `Video/Source` node), with no kernel module;
 - has a **settings panel** with a live preview, like the Windows version. It handles two things: the **image
-  adjustments** done by eoscam (brightness, contrast, gamma, temperature, tint and saturation) and the **camera
+  adjustments** done by canon-eos-webcam (brightness, contrast, gamma, temperature, tint and saturation) and the **camera
   settings**, written to the Canon itself over PTP (exposure compensation, ISO, white balance, color
   temperature, Picture Style with contrast/sharpness/saturation/color tone, and Auto Lighting Optimizer).
 
@@ -23,7 +23,7 @@ service must not depend on GTK). The compiler and CMake are build dependencies.
 
 ## Context: the Windows version
 
-There is already a working Windows 11 version in this same repository (`eoscam`). It uses the standard Windows
+There is already a working Windows 11 version in this same repository (`canon-eos-webcam`). It uses the standard Windows
 PTP/WPD driver and `MFCreateVirtualCamera`. The reference files are:
 
 - `src/app/canon_camera.cpp` / `.h`: the Canon PTP commands and the Live View/recovery logic. **This is the main
@@ -45,7 +45,7 @@ Don't change any of the Windows code. The Linux code lives in its own folder (`l
 - C++20 (GCC or Clang), building without warnings with `-Wall -Wextra`.
 - **Language:** source code, comments, log messages, diagnostic output and commit messages are in **English**,
   like the rest of the project. The user interface (panel, `.desktop` entry, error messages shown to the user) is
-  in English by default, with a Brazilian Portuguese translation picked from `EOSCAM_LANG` (`en`|`pt`), then
+  in English by default, with a Brazilian Portuguese translation picked from `CANON_EOS_WEBCAM_LANG` (`en`|`pt`), then
   `language` in the `[ui]` section of `settings.ini` (`auto`|`en`|`pt`), then the locale (`LANG`/`LC_MESSAGES`
   starting with `pt` → Portuguese). Keep the strings in a table like `src/common/i18n.h`, with both languages
   side by side. `linux/README.md` in English, plus `linux/README.pt-BR.md`.
@@ -58,9 +58,9 @@ Don't change any of the Windows code. The Linux code lives in its own folder (`l
 
 Two programs:
 
-- **`eoscam`**: the service, running as a **systemd user service** (`systemctl --user`). It does all the work and
+- **`canon-eos-webcam`**: the service, running as a **systemd user service** (`systemctl --user`). It does all the work and
   is the only one that talks to the camera.
-- **`eoscam-panel`**: the settings panel (GTK4), opened by the user when they want. It doesn't talk to the camera
+- **`canon-eos-webcam-panel`**: the settings panel (GTK4), opened by the user when they want. It doesn't talk to the camera
   or process images: it talks to the service over a Unix socket (see "Control channel"). Closing the panel, or it
   hanging, doesn't affect the webcam.
 
@@ -205,7 +205,7 @@ with a clear spot to insert effects later (see "Future: Maxine").
 - `pw_stream` with `PW_DIRECTION_OUTPUT` and the properties:
   - `media.class = "Video/Source"`
   - `media.role = "Camera"` (the xdg-desktop-portal camera portal, used by Chrome, filters on it)
-  - `node.name = "eoscam"`, `node.description = "Canon EOS (eoscam)"`
+  - `node.name = "canon-eos-webcam"`, `node.description = "Canon EOS Webcam"`
 - Fixed format: **1280×720, 30/1 fps**. Start with `SPA_VIDEO_FORMAT_YUY2`; if Chrome doesn't accept it, also
   offer `I420`/`NV12`. Test which one Chrome picks and keep only what is needed. On Windows, offering a single
   format avoided headaches.
@@ -216,10 +216,10 @@ with a clear spot to insert effects later (see "Future: Maxine").
 
 **In Chrome:** camera support through PipeWire may need the `chrome://flags/#enable-webrtc-pipewire-camera` flag
 ("PipeWire Camera support") enabled. Check it on the installed version and document it in the README. Also confirm
-that `xdg-desktop-portal` is running and that "Canon EOS (eoscam)" shows up in the camera list when Meet is
+that `xdg-desktop-portal` is running and that "Canon EOS Webcam" shows up in the camera list when Meet is
 opened. Ask the user to do this final test in the browser, without automating clicks.
 
-## Image adjustments (done by eoscam)
+## Image adjustments (done by canon-eos-webcam)
 
 The same six as the Windows version, with the same ranges and formulas, so a `settings.ini` works on both
 systems:
@@ -255,7 +255,7 @@ if saturation ≠ 100 %:
     each channel = clamp(gray + ((channel − gray) × s >> 7))
 ```
 
-The values live in `~/.config/eoscam/settings.ini`, section `[image]`, with the keys `brightness`, `contrast`,
+The values live in `~/.config/canon-eos-webcam/settings.ini`, section `[image]`, with the keys `brightness`, `contrast`,
 `gamma`, `temperature`, `tint` and `saturation` (the same as on Windows). The service writes ~0.5 s after the last
 change (debounce), and a hand edit to the file is reloaded automatically (inotify). This way everything can be
 tested without the panel. Missing or invalid values fall back to the default.
@@ -280,7 +280,7 @@ Keep a cache `code → {value, list, raw bytes}` with a generation counter that 
 **250 ms** (instead of 1 s), so the panel quickly reflects what changes on the camera, including through its own
 buttons.
 
-`EOSCAM_DUMP_EVENTS=1` must print every `0xC189`/`0xC18A` event in hexadecimal, for diagnostics.
+`CANON_EOS_WEBCAM_DUMP_EVENTS=1` must print every `0xC189`/`0xC18A` event in hexadecimal, for diagnostics.
 
 ### Writing
 
@@ -325,7 +325,7 @@ current style has no known parameters or the cache has fewer than 28 bytes, leav
 
 ## Control channel (service ↔ panel)
 
-Unix socket at `$XDG_RUNTIME_DIR/eoscam.sock`, accessible only by the user. Use a simple text protocol, one
+Unix socket at `$XDG_RUNTIME_DIR/canon-eos-webcam.sock`, accessible only by the user. Use a simple text protocol, one
 message per line (e.g. JSON lines), so it can be tested with `socat`. It must cover:
 
 - **state**: camera connected or not, its name, state (idle / starting / live / no camera), input and output
@@ -341,7 +341,7 @@ message per line (e.g. JSON lines), so it can be tested with `socat`. It must co
 
 If the panel doesn't read in time, the service drops preview frames: the panel must never slow the webcam down.
 
-## Settings panel (`eoscam-panel`, GTK4)
+## Settings panel (`canon-eos-webcam-panel`, GTK4)
 
 A regular window (Hyprland manages it like any other), with a `.desktop` entry ("Canon webcam settings", with a
 Portuguese `Name[pt_BR]`) to open it from the Omarchy launcher. A second instance only brings the first one to the
@@ -368,17 +368,17 @@ If the service is not running, the panel says so and tries to reconnect by itsel
 
 **Testing the panel without synthetic input:** the logic (building the lists, names, encodings, Picture Style)
 lives outside the widgets and can be tested through the control channel and the subcommands. To check the looks,
-if possible, make the panel render itself to a PNG without showing the window (e.g. `eoscam-panel --snapshot
+if possible, make the panel render itself to a PNG without showing the window (e.g. `canon-eos-webcam-panel --snapshot
 file.png`, using `gtk_widget_snapshot` and the GSK renderer); if that is not possible, ask the user to open the
 panel and look. Never simulate clicks or keys.
 
 ## Permissions, udev and conflicts
 
-- File `/etc/udev/rules.d/70-eoscam.rules`, in `/etc` so no package update overwrites it:
+- File `/etc/udev/rules.d/70-canon-eos-webcam.rules`, in `/etc` so no package update overwrites it:
   - `SUBSYSTEM=="usb", ATTR{idVendor}=="04a9", TAG+="uaccess"` (access for the session user, no root or groups).
   - Hiding the camera from gvfs: the gvfs gphoto2 volume monitor relies on the `ID_GPHOTO2` udev property. Check
     whether gvfs (`gvfs-gphoto2`) is installed. If it is, consider clearing that property for the Canon in a rule
-    that runs after the libgphoto2 ones (e.g. `99-eoscam-nogvfs.rules`). Confirm it works (`claim_interface` no
+    that runs after the libgphoto2 ones (e.g. `99-canon-eos-webcam-nogvfs.rules`). Confirm it works (`claim_interface` no
     longer returns BUSY with the file manager open) before adopting it.
 - **Before touching the system:** survey what exists of the old solution (`v4l2loopback` module loaded through
   `/etc/modules-load.d` or `/etc/modprobe.d`, systemd services with gphoto2/ffmpeg, scripts in the Hyprland
@@ -387,50 +387,50 @@ panel and look. Never simulate clicks or keys.
 
 ## Installation and service
 
-- Install to `~/.local/bin/eoscam`. Service at `~/.config/systemd/user/eoscam.service`, with
+- Install to `~/.local/bin/canon-eos-webcam`. Service at `~/.config/systemd/user/canon-eos-webcam.service`, with
   `Restart=on-failure`, `WantedBy=default.target` and a dependency on `pipewire.service`. No configuration inside
   the Omarchy files (`~/.config/hypr`, etc.), so its updates don't interfere.
 - The service is **always running** (cheap without a consumer) and the PipeWire node always exists, so the camera
   shows up in Chrome even before the Canon is turned on.
-- Configuration in `~/.config/eoscam/settings.ini`: `[image]` section (image adjustments, see above), `[ui]`
+- Configuration in `~/.config/canon-eos-webcam/settings.ini`: `[image]` section (image adjustments, see above), `[ui]`
   section (`language`) and `[linux]` section (crop position, format, log level). External edits are reloaded
   automatically.
-- The panel installs `~/.local/bin/eoscam-panel` and `~/.local/share/applications/eoscam-panel.desktop`.
+- The panel installs `~/.local/bin/canon-eos-webcam-panel` and `~/.local/share/applications/canon-eos-webcam-panel.desktop`.
 - Log to the journal (stdout/stderr with `systemd`), in English.
 - A `scripts/install.sh` (in `linux/`) that builds, installs the binary, the unit and the udev rule (the latter
-  with `sudo`, warning the user first) and runs `udevadm control --reload` + `systemctl --user enable --now eoscam`.
+  with `sudo`, warning the user first) and runs `udevadm control --reload` + `systemctl --user enable --now canon-eos-webcam`.
 
 ## Subcommands (for testing without the browser)
 
-- `eoscam probe`: finds the camera, opens the session, turns Live View on, saves **one** JPEG to
-  `/tmp/eoscam-probe.jpg`, turns everything off and shows a summary (device, endpoints, timings).
-- `eoscam bench [seconds]`: captures and processes without PipeWire and measures capture frames/s, processing
+- `canon-eos-webcam probe`: finds the camera, opens the session, turns Live View on, saves **one** JPEG to
+  `/tmp/canon-eos-webcam-probe.jpg`, turns everything off and shows a summary (device, endpoints, timings).
+- `canon-eos-webcam bench [seconds]`: captures and processes without PipeWire and measures capture frames/s, processing
   time and CPU.
-- `eoscam run`: the service in the foreground (what the systemd unit runs).
-- `eoscam process in.jpg out.yuv`: runs the pipeline over a JPEG, without a camera, with the image adjustments
+- `canon-eos-webcam run`: the service in the foreground (what the systemd unit runs).
+- `canon-eos-webcam process in.jpg out.yuv`: runs the pipeline over a JPEG, without a camera, with the image adjustments
   from `settings.ini`.
-- `eoscam cam`: with the service stopped, connects and lists every known camera property (code, name, current
-  value, allowed list and raw bytes), like `eoscam cam` on Windows.
-- `eoscam get` / `eoscam set <property> <value>`: talk to the running service through the socket (e.g.
-  `eoscam set image.brightness 20`, `eoscam set cam.wb 1`, `eoscam set cam.style.sharpness 5`). They are for
+- `canon-eos-webcam cam`: with the service stopped, connects and lists every known camera property (code, name, current
+  value, allowed list and raw bytes), like `canon-eos-webcam cam` on Windows.
+- `canon-eos-webcam get` / `canon-eos-webcam set <property> <value>`: talk to the running service through the socket (e.g.
+  `canon-eos-webcam set image.brightness 20`, `canon-eos-webcam set cam.wb 1`, `canon-eos-webcam set cam.style.sharpness 5`). They are for
   testing the settings without the panel.
 
 ## Steps and acceptance criteria
 
-1. **Basic PTP:** `eoscam probe` saves a valid 1056×704 JPEG from the T3. Running `probe` 10 times in a row works
+1. **Basic PTP:** `canon-eos-webcam probe` saves a valid 1056×704 JPEG from the T3. Running `probe` 10 times in a row works
    every time (the camera leaves remote mode properly).
-2. **Continuous capture:** `eoscam bench 60` keeps **≥ 28 fps** of capture. Unplugging and replugging the cable
+2. **Continuous capture:** `canon-eos-webcam bench 60` keeps **≥ 28 fps** of capture. Unplugging and replugging the cable
    and turning the camera off and on during the test recover by themselves, without restarting the process.
-3. **Pipeline:** `eoscam process` produces a 1280×720 frame with the right crop (check by converting the `.yuv`
+3. **Pipeline:** `canon-eos-webcam process` produces a 1280×720 frame with the right crop (check by converting the `.yuv`
    with some tool already installed or by writing a debug PNG).
 4. **PipeWire:** the node shows up in `pw-dump`/`wpctl status` with the right name and class. A test consumer
-   (e.g. `gst-launch-1.0 pipewiresrc target-object=eoscam ! fakesink`, if GStreamer is installed) gets frames at
+   (e.g. `gst-launch-1.0 pipewiresrc target-object=canon-eos-webcam ! fakesink`, if GStreamer is installed) gets frames at
    ~30 fps. Without a consumer, Live View turns off in ~5 s and the process CPU stays ≈ 0.
-5. **Chrome/Meet:** "Canon EOS (eoscam)" shows up in Meet and the image is smooth (test done by the user).
-6. **Image adjustments:** `eoscam process` with known values in `settings.ini` gives the expected result (compare
+5. **Chrome/Meet:** "Canon EOS Webcam" shows up in Meet and the image is smooth (test done by the user).
+6. **Image adjustments:** `canon-eos-webcam process` with known values in `settings.ini` gives the expected result (compare
    pixels with the formulas). Editing the file with the service running changes the image in less than 1 s, and
-   `eoscam set image.*` writes to the file. Measure the cost: with adjustments on, capture stays ≥ 28 fps.
-7. **Camera settings:** `eoscam cam` lists the properties in the table. Through `eoscam set`, changing the white
+   `canon-eos-webcam set image.*` writes to the file. Measure the cost: with adjustments on, capture stays ≥ 28 fps.
+7. **Camera settings:** `canon-eos-webcam cam` lists the properties in the table. Through `canon-eos-webcam set`, changing the white
    balance, exposure compensation, Picture Style and one of its parameters changes the image and is confirmed by
    `PropValueChanged`. A refused value returns the message "the camera refused", without bringing capture down.
 8. **Panel:** live preview with zoom, the six image adjustments and the camera settings enabled according to the

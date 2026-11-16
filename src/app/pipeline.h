@@ -20,7 +20,7 @@
 #include "i18n.h"
 #include "settings.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 enum class FxState { Off, Loading, Active, Failed, Unavailable };
 
@@ -90,4 +90,4 @@ private:
     std::atomic<bool> previewWanted_{false};
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

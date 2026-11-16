@@ -21,7 +21,7 @@
 #include "i18n.h"
 #include "nvVideoEffects.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 // Global state of the runtime: located only once, on the first Init().
 class MaxineRuntime {
@@ -128,4 +128,4 @@ private:
     bool loaded_ = false;
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

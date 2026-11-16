@@ -1,13 +1,16 @@
-// "Start with Windows": the EosCam value in HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
+// "Start with Windows": the CanonEosWebcam value in HKCU\Software\Microsoft\Windows\CurrentVersion\Run.
 #pragma once
 
 #include <windows.h>
 
 #include <string>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 inline constexpr wchar_t kRunKeyPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+inline constexpr wchar_t kRunValue[] = L"CanonEosWebcam";
+// Value written by the versions released under the old name (eoscam); removed whenever autostart changes.
+inline constexpr wchar_t kLegacyRunValue[] = L"EosCam";
 
 // Folder of the current executable, with the trailing backslash.
 inline std::wstring ExeDirectory() {
@@ -18,19 +21,23 @@ inline std::wstring ExeDirectory() {
 }
 
 inline bool AutostartEnabled() {
-    return RegGetValueW(HKEY_CURRENT_USER, kRunKeyPath, L"EosCam", RRF_RT_REG_SZ, nullptr, nullptr, nullptr) ==
+    return RegGetValueW(HKEY_CURRENT_USER, kRunKeyPath, kRunValue, RRF_RT_REG_SZ, nullptr, nullptr, nullptr) ==
            ERROR_SUCCESS;
 }
 
-// Turns starting eoscam-bg with Windows on/off. Returns the registry error code (0 = ok).
+// Command line stored in the Run key: the background bridge next to the current executable.
+inline std::wstring AutostartCommand() { return L"\"" + ExeDirectory() + L"canon-eos-webcam-bg.exe\""; }
+
+// Turns starting canon-eos-webcam-bg with Windows on/off. Returns the registry error code (0 = ok).
 inline LSTATUS SetAutostart(bool on) {
+    RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKeyPath, kLegacyRunValue);
     if (on) {
-        std::wstring value = L"\"" + ExeDirectory() + L"eoscam-bg.exe\"";
-        return RegSetKeyValueW(HKEY_CURRENT_USER, kRunKeyPath, L"EosCam", REG_SZ, value.c_str(),
+        std::wstring value = AutostartCommand();
+        return RegSetKeyValueW(HKEY_CURRENT_USER, kRunKeyPath, kRunValue, REG_SZ, value.c_str(),
                                DWORD((value.size() + 1) * sizeof(wchar_t)));
     }
-    LSTATUS s = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKeyPath, L"EosCam");
+    LSTATUS s = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKeyPath, kRunValue);
     return s == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : s;
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

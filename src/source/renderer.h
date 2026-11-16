@@ -1,5 +1,5 @@
 // Holds the NV12 frame the source delivers to the client and draws the warning screens (no frames,
-// incompatible versions, etc.). The camera image arrives ready from the bridge (eoscam.exe), as NV12
+// incompatible versions, etc.). The camera image arrives ready from the bridge (canon-eos-webcam.exe), as NV12
 // 1920x1080: this class decodes and scales nothing, so the DLL stays light inside the Frame Server
 // (which must not load WIC, Maxine or CUDA).
 #pragma once
@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 class FrameRenderer {
 public:
@@ -32,4 +32,4 @@ private:
     std::wstring lastMessage_;
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

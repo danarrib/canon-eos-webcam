@@ -1,5 +1,5 @@
-// Frame channel between eoscam.exe (user session, talks to the camera, processes the image on the GPU)
-// and eoscam-source.dll (loaded by the Frame Server, LocalService account, session 0).
+// Frame channel between canon-eos-webcam.exe (user session, talks to the camera, processes the image on the GPU)
+// and canon-eos-webcam-source.dll (loaded by the Frame Server, LocalService account, session 0).
 //
 // Layout v2: the slots carry ready-made NV12 1920x1080 frames (v1 sent Live View JPEGs).
 // The mapping/event names end in "2" so an installed v1 and v2 never get mixed up.
@@ -16,26 +16,26 @@
 #include <cstdint>
 #include <cstring>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 // {D4DFB62F-F0E4-4DD7-A4AA-EDB7F8E013BC}
 inline constexpr GUID kSourceClsid = {0xd4dfb62f, 0xf0e4, 0x4dd7, {0xa4, 0xaa, 0xed, 0xb7, 0xf8, 0xe0, 0x13, 0xbc}};
-#define EOSCAM_CLSID_STRING L"{D4DFB62F-F0E4-4DD7-A4AA-EDB7F8E013BC}"
+#define CANON_EOS_WEBCAM_CLSID_STRING L"{D4DFB62F-F0E4-4DD7-A4AA-EDB7F8E013BC}"
 
-inline constexpr wchar_t kCameraName[] = L"Canon EOS Webcam (eoscam)";
-// With the environment variable EOSCAM_LOCAL=1 the channel uses the Local\ namespace (current
+inline constexpr wchar_t kCameraName[] = L"Canon EOS Webcam";
+// With the environment variable CANON_EOS_WEBCAM_LOCAL=1 the channel uses the Local\ namespace (current
 // session), which allows testing the source inside a regular process, without the Frame Server.
 inline bool UseLocalNamespace() {
     wchar_t v[8];
-    return GetEnvironmentVariableW(L"EOSCAM_LOCAL", v, 8) > 0 && v[0] == L'1';
+    return GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_LOCAL", v, 8) > 0 && v[0] == L'1';
 }
 inline const wchar_t* MappingName() {
-    return UseLocalNamespace() ? L"Local\\EosCamFrames2" : L"Global\\EosCamFrames2";
+    return UseLocalNamespace() ? L"Local\\CanonEosWebcamFrames2" : L"Global\\CanonEosWebcamFrames2";
 }
 inline const wchar_t* EventName() {
-    return UseLocalNamespace() ? L"Local\\EosCamFrameReady2" : L"Global\\EosCamFrameReady2";
+    return UseLocalNamespace() ? L"Local\\CanonEosWebcamFrameReady2" : L"Global\\CanonEosWebcamFrameReady2";
 }
-inline constexpr wchar_t kDataDir[] = L"C:\\ProgramData\\EosCam";
+inline constexpr wchar_t kDataDir[] = L"C:\\ProgramData\\CanonEosWebcam";
 
 // SYSTEM, LocalService, Administrators and authenticated users have full access.
 inline constexpr wchar_t kSddl[] = L"D:(A;;GA;;;SY)(A;;GA;;;LS)(A;;GA;;;BA)(A;;GA;;;AU)";
@@ -223,7 +223,7 @@ public:
     }
 
     // Copies the most recent frame to dst (dstBytes bytes) if it is NV12 expectW x expectH.
-    // Incompatible: the producer sent another format/size (different eoscam versions).
+    // Incompatible: the producer sent another format/size (different canon-eos-webcam versions).
     ReadResult ReadLatest(uint8_t* dst, uint32_t dstBytes, uint32_t expectW, uint32_t expectH, FrameMeta& meta) {
         if (!frames_) return ReadResult::None;
         LONG slot = frames_->header.latestSlot;
@@ -259,4 +259,4 @@ private:
     SharedFrames* frames_ = nullptr;
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

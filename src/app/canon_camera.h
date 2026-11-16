@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 struct PtpResult {
     HRESULT hr = E_FAIL;
@@ -88,7 +88,7 @@ public:
     bool PollEvents();
     // Copy of the state of a property (false if the camera never announced it). Thread-safe.
     bool GetProp(uint32_t prop, PropState& out) const;
-    // Copy of every known property (diagnostics: "eoscam cam").
+    // Copy of every known property (diagnostics: "canon-eos-webcam cam").
     std::map<uint32_t, PropState> AllProps() const {
         std::lock_guard<std::mutex> lk(propsMu_);
         return props_;
@@ -128,4 +128,4 @@ private:
 
 std::string W2U(const wchar_t* w);
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

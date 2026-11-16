@@ -1,11 +1,11 @@
 // User-interface strings in English (the default) and Brazilian Portuguese.
 //
-// Every string lives in the EOSCAM_STRINGS list below as X(Id, "English", "Português"), so a string can
+// Every string lives in the CANON_EOS_WEBCAM_STRINGS list below as X(Id, "English", "Português"), so a string can
 // never be missing in one of the languages. Logs and diagnostic output stay in English; only what the
 // user sees (control panel, tray menu, warning screens of the virtual camera and the everyday console
 // commands) goes through Tr()/TrW().
 //
-// Language: EOSCAM_LANG (en|pt), then "language" in the [ui] section of settings.ini (auto|en|pt), then
+// Language: CANON_EOS_WEBCAM_LANG (en|pt), then "language" in the [ui] section of settings.ini (auto|en|pt), then
 // the Windows display language (Portuguese -> pt, anything else -> en). The DLL runs as LocalService, so
 // it only sees the environment and display language of that account (normally the system language).
 //
@@ -20,19 +20,19 @@
 #include <cwchar>
 #include <string>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 enum class Lang : int { En = 0, Pt = 1 };
 
 // clang-format off
-#define EOSCAM_STRINGS(X) \
+#define CANON_EOS_WEBCAM_STRINGS(X) \
     X(None, "", "") \
     /* ---- tray icon and panel window */ \
-    X(TrayTip, "eoscam — Canon EOS as a webcam", "eoscam — Canon EOS como webcam") \
+    X(TrayTip, "canon-eos-webcam — Canon EOS as a webcam", "canon-eos-webcam — Canon EOS como webcam") \
     X(TrayOpen, "Open panel", "Abrir painel") \
     X(TrayAutostart, "Start with Windows", "Iniciar com o Windows") \
     X(TrayExit, "Exit", "Sair") \
-    X(PanelTitle, "eoscam — control panel", "eoscam — painel de controle") \
+    X(PanelTitle, "canon-eos-webcam — control panel", "canon-eos-webcam — painel de controle") \
     X(WaitingForCamera, "Waiting for the camera image...", "Aguardando imagem da câmera...") \
     X(ZoomLabel, "Zoom:", "Zoom:") \
     X(ZoomFit, "Fit", "Ajustar") \
@@ -159,34 +159,34 @@ enum class Lang : int { En = 0, Pt = 1 };
                         "Processamento %.1f ms/quadro (GPU %.1f, CPU %.1f)") \
     /* ---- warning screens of the virtual camera (DLL) */ \
     X(SrcInitializing, "Initializing...", "Inicializando...") \
-    X(SrcNotRunningTitle, "eoscam is not running", "O eoscam não está em execução") \
-    X(SrcNotRunningDetail, "Start the bridge with \"eoscam start\" (or turn on \"eoscam autostart on\").", \
-                           "Inicie a ponte com \"eoscam start\" (ou ative \"eoscam autostart on\").") \
+    X(SrcNotRunningTitle, "canon-eos-webcam is not running", "O canon-eos-webcam não está em execução") \
+    X(SrcNotRunningDetail, "Start the bridge with \"canon-eos-webcam start\" (or turn on \"canon-eos-webcam autostart on\").", \
+                           "Inicie a ponte com \"canon-eos-webcam start\" (ou ative \"canon-eos-webcam autostart on\").") \
     X(SrcNoCameraTitle, "Canon camera not found", "Câmera Canon não encontrada") \
     X(SrcNoCameraDetail, "Check that the camera is turned on, in photo mode, and connected via USB.", \
                          "Verifique se a câmera está ligada, no modo de foto, e conectada via USB.") \
     X(SrcWaitingTitle, "Waiting for image...", "Aguardando imagem...") \
     X(SrcStartingTitle, "Starting the camera...", "Ligando a câmera...") \
     X(SrcStartingDetail, "Starting the Canon Live View.", "Iniciando o Live View da Canon.") \
-    X(SrcIncompatibleTitle, "Incompatible eoscam versions", "Versões incompatíveis do eoscam") \
-    X(SrcIncompatibleDetail, "The bridge (eoscam.exe) and the virtual camera are from different versions: reinstall eoscam.", \
-                             "A ponte (eoscam.exe) e a câmera virtual são de versões diferentes: reinstale o eoscam.") \
+    X(SrcIncompatibleTitle, "Incompatible canon-eos-webcam versions", "Versões incompatíveis do canon-eos-webcam") \
+    X(SrcIncompatibleDetail, "The bridge (canon-eos-webcam.exe) and the virtual camera are from different versions: reinstall canon-eos-webcam.", \
+                             "A ponte (canon-eos-webcam.exe) e a câmera virtual são de versões diferentes: reinstale o canon-eos-webcam.") \
     /* ---- console */ \
-    X(CliOtherInstance, "Another eoscam instance is already running (use \"eoscam stop\" to end it).", \
-                        "Outra instância do eoscam já está rodando (use \"eoscam stop\" para encerrá-la).") \
-    X(CliAlreadyRunning, "eoscam is already running.\n", "O eoscam já está rodando.\n") \
+    X(CliOtherInstance, "Another canon-eos-webcam instance is already running (use \"canon-eos-webcam stop\" to end it).", \
+                        "Outra instância do canon-eos-webcam já está rodando (use \"canon-eos-webcam stop\" para encerrá-la).") \
+    X(CliAlreadyRunning, "canon-eos-webcam is already running.\n", "O canon-eos-webcam já está rodando.\n") \
     X(CliStartFailed, "Couldn't start %s (error %lu).\n", "Não consegui iniciar %s (erro %lu).\n") \
-    X(CliStarted, "eoscam started in the background (log in %s\\eoscam.log).\n", \
-                  "eoscam iniciado em segundo plano (log em %s\\eoscam.log).\n") \
-    X(CliNotRunning, "eoscam is not running.\n", "O eoscam não está rodando.\n") \
-    X(CliStopTimeout, "eoscam did not respond to the stop request.\n", "O eoscam não respondeu ao pedido de parada.\n") \
-    X(CliStopped, "eoscam stopped.\n", "eoscam encerrado.\n") \
+    X(CliStarted, "canon-eos-webcam started in the background (log in %s\\canon-eos-webcam.log).\n", \
+                  "canon-eos-webcam iniciado em segundo plano (log em %s\\canon-eos-webcam.log).\n") \
+    X(CliNotRunning, "canon-eos-webcam is not running.\n", "O canon-eos-webcam não está rodando.\n") \
+    X(CliStopTimeout, "canon-eos-webcam did not respond to the stop request.\n", "O canon-eos-webcam não respondeu ao pedido de parada.\n") \
+    X(CliStopped, "canon-eos-webcam stopped.\n", "canon-eos-webcam encerrado.\n") \
     X(CliRegWriteFailed, "Failed to write to the registry (error %ld).\n", "Falha ao gravar no registro (erro %ld).\n") \
-    X(CliAutostartOn, "eoscam will start with Windows (%s).\n", "O eoscam vai iniciar junto com o Windows (%s).\n") \
+    X(CliAutostartOn, "canon-eos-webcam will start with Windows (%s).\n", "O canon-eos-webcam vai iniciar junto com o Windows (%s).\n") \
     X(CliRegDeleteFailed, "Failed to remove from the registry (error %ld).\n", \
                           "Falha ao remover do registro (erro %ld).\n") \
-    X(CliAutostartOff, "eoscam will no longer start with Windows.\n", "O eoscam não vai mais iniciar com o Windows.\n") \
-    X(CliAutostartUsage, "usage: eoscam autostart on|off\n", "uso: eoscam autostart on|off\n") \
+    X(CliAutostartOff, "canon-eos-webcam will no longer start with Windows.\n", "O canon-eos-webcam não vai mais iniciar com o Windows.\n") \
+    X(CliAutostartUsage, "usage: canon-eos-webcam autostart on|off\n", "uso: canon-eos-webcam autostart on|off\n") \
     X(CliInstallFailed, "MFCreateVirtualCamera failed (hr=0x%08lX).\n", "MFCreateVirtualCamera falhou (hr=0x%08lX).\n") \
     X(CliDllNotRegistered, "The source DLL is not registered. Run scripts\\deploy.ps1 as administrator.\n", \
                            "A DLL da fonte não está registrada. Rode scripts\\deploy.ps1 como administrador.\n") \
@@ -195,18 +195,18 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(CliUninstallFailed, "Failed to remove the virtual camera (hr=0x%08lX).\n", \
                           "Falha ao remover a câmera virtual (hr=0x%08lX).\n") \
     X(CliUninstalled, "Virtual camera removed.\n", "Câmera virtual removida.\n") \
-    X(CliPanelConsoleOnly, "eoscam is running without a window (\"eoscam run\" in a console): the panel only exists in eoscam-bg.\n", \
-                           "O eoscam está rodando sem janela (\"eoscam run\" em console): o painel só existe no eoscam-bg.\n") \
-    X(CliPanelNoWindow, "eoscam started, but its window did not appear.\n", "O eoscam iniciou, mas a janela não apareceu.\n") \
+    X(CliPanelConsoleOnly, "canon-eos-webcam is running without a window (\"canon-eos-webcam run\" in a console): the panel only exists in canon-eos-webcam-bg.\n", \
+                           "O canon-eos-webcam está rodando sem janela (\"canon-eos-webcam run\" em console): o painel só existe no canon-eos-webcam-bg.\n") \
+    X(CliPanelNoWindow, "canon-eos-webcam started, but its window did not appear.\n", "O canon-eos-webcam iniciou, mas a janela não apareceu.\n") \
     X(CliPanelOpened, "Panel opened.\n", "Painel aberto.\n") \
     X(CliUsage, \
-        "usage: eoscam [command]\n" \
+        "usage: canon-eos-webcam [command]\n" \
         "  run                 (default) bridges the Canon camera and the virtual webcam, in this console\n" \
-        "  start | stop        starts/stops the bridge in the background (eoscam-bg.exe)\n" \
+        "  start | stop        starts/stops the bridge in the background (canon-eos-webcam-bg.exe)\n" \
         "  autostart on|off    starts (or not) the background bridge together with Windows\n" \
-        "  install             registers the virtual camera \"Canon EOS Webcam (eoscam)\"\n" \
+        "  install             registers the virtual camera \"Canon EOS Webcam\"\n" \
         "  uninstall           removes the virtual camera\n" \
-        "  panel               opens the control panel (starts eoscam-bg if it is not running)\n" \
+        "  panel               opens the control panel (starts canon-eos-webcam-bg if it is not running)\n" \
         "  cam [--set PROP=VALUE]... [--out f.jpg]\n" \
         "                      diagnostics: lists the settings the camera announces and tests writing them (hex),\n" \
         "                      saving frames\n" \
@@ -216,17 +216,17 @@ enum class Lang : int { En = 0, Pt = 1 };
         "  list                lists the video cameras Windows can see\n" \
         "  test [--seconds N] [--size WxH] [--out file.jpg] [--direct]\n" \
         "                      opens the virtual webcam like a regular app and measures performance\n" \
-        "                      --direct loads the DLL in this process (no Frame Server; use EOSCAM_LOCAL=1\n" \
-        "                      both here and in \"eoscam run\")\n" \
+        "                      --direct loads the DLL in this process (no Frame Server; use CANON_EOS_WEBCAM_LOCAL=1\n" \
+        "                      both here and in \"canon-eos-webcam run\")\n" \
         "\n" \
-        "Language: EOSCAM_LANG=en|pt, or language=auto|en|pt in the [ui] section of settings.ini.\n", \
-        "uso: eoscam [comando]\n" \
+        "Language: CANON_EOS_WEBCAM_LANG=en|pt, or language=auto|en|pt in the [ui] section of settings.ini.\n", \
+        "uso: canon-eos-webcam [comando]\n" \
         "  run                 (padrão) faz a ponte entre a câmera Canon e a webcam virtual, neste console\n" \
-        "  start | stop        inicia/encerra a ponte em segundo plano (eoscam-bg.exe)\n" \
+        "  start | stop        inicia/encerra a ponte em segundo plano (canon-eos-webcam-bg.exe)\n" \
         "  autostart on|off    inicia (ou não) a ponte em segundo plano junto com o Windows\n" \
-        "  install             registra a câmera virtual \"Canon EOS Webcam (eoscam)\"\n" \
+        "  install             registra a câmera virtual \"Canon EOS Webcam\"\n" \
         "  uninstall           remove a câmera virtual\n" \
-        "  panel               abre o painel de controle (inicia o eoscam-bg se ele não estiver rodando)\n" \
+        "  panel               abre o painel de controle (inicia o canon-eos-webcam-bg se ele não estiver rodando)\n" \
         "  cam [--set PROP=VALOR]... [--out f.jpg]\n" \
         "                      diagnóstico: lista os ajustes que a câmera anuncia e testa escrever (hex),\n" \
         "                      salvando quadros\n" \
@@ -236,16 +236,16 @@ enum class Lang : int { En = 0, Pt = 1 };
         "  list                lista as câmeras de vídeo que o Windows enxerga\n" \
         "  test [--seconds N] [--size LxA] [--out arquivo.jpg] [--direct]\n" \
         "                      abre a webcam virtual como um app comum e mede o desempenho\n" \
-        "                      --direct carrega a DLL neste processo (sem Frame Server; use EOSCAM_LOCAL=1\n" \
-        "                      tanto aqui quanto no \"eoscam run\")\n" \
+        "                      --direct carrega a DLL neste processo (sem Frame Server; use CANON_EOS_WEBCAM_LOCAL=1\n" \
+        "                      tanto aqui quanto no \"canon-eos-webcam run\")\n" \
         "\n" \
-        "Idioma: EOSCAM_LANG=en|pt, ou language=auto|en|pt na seção [ui] do settings.ini.\n")
+        "Idioma: CANON_EOS_WEBCAM_LANG=en|pt, ou language=auto|en|pt na seção [ui] do settings.ini.\n")
 // clang-format on
 
 enum class Str : int {
-#define EOSCAM_STR_ID(id, en, pt) id,
-    EOSCAM_STRINGS(EOSCAM_STR_ID)
-#undef EOSCAM_STR_ID
+#define CANON_EOS_WEBCAM_STR_ID(id, en, pt) id,
+    CANON_EOS_WEBCAM_STRINGS(CANON_EOS_WEBCAM_STR_ID)
+#undef CANON_EOS_WEBCAM_STR_ID
     Count
 };
 
@@ -256,9 +256,9 @@ struct Entry {
 };
 
 inline constexpr Entry kTable[] = {
-#define EOSCAM_STR_ENTRY(id, en, pt) {{en, pt}},
-    EOSCAM_STRINGS(EOSCAM_STR_ENTRY)
-#undef EOSCAM_STR_ENTRY
+#define CANON_EOS_WEBCAM_STR_ENTRY(id, en, pt) {{en, pt}},
+    CANON_EOS_WEBCAM_STRINGS(CANON_EOS_WEBCAM_STR_ENTRY)
+#undef CANON_EOS_WEBCAM_STR_ENTRY
 };
 static_assert(sizeof kTable / sizeof kTable[0] == size_t(Str::Count));
 
@@ -276,14 +276,14 @@ inline Lang DisplayLang() {
 
 inline bool EnvLang(Lang& out) {
     wchar_t v[16];
-    DWORD n = GetEnvironmentVariableW(L"EOSCAM_LANG", v, 16);
+    DWORD n = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_LANG", v, 16);
     return n > 0 && n < 16 && ParseLang(v, out);
 }
 
 }  // namespace i18n_detail
 
-// Picks the language: EOSCAM_LANG, then [ui] language in the given settings.ini (may be nullptr), then the
-// Windows display language. Call once at startup; without it the first Tr() uses EOSCAM_LANG or Windows.
+// Picks the language: CANON_EOS_WEBCAM_LANG, then [ui] language in the given settings.ini (may be nullptr), then the
+// Windows display language. Call once at startup; without it the first Tr() uses CANON_EOS_WEBCAM_LANG or Windows.
 inline Lang InitLang(const wchar_t* settingsPath) {
     Lang l;
     if (!i18n_detail::EnvLang(l)) {
@@ -350,4 +350,4 @@ inline std::string Text(const Msg& m, Lang l) {
 }
 inline std::string Text(const Msg& m) { return Text(m, CurrentLang()); }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

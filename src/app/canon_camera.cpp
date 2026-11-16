@@ -9,7 +9,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
@@ -145,7 +145,7 @@ HRESULT PtpDevice::Open(const std::wstring& id) {
     ComPtr<IPortableDeviceValues> client;
     HRESULT hr = CoCreateInstance(CLSID_PortableDeviceValues, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&client));
     if (FAILED(hr)) return hr;
-    client->SetStringValue(WPD_CLIENT_NAME, L"eoscam");
+    client->SetStringValue(WPD_CLIENT_NAME, L"canon-eos-webcam");
     client->SetUnsignedIntegerValue(WPD_CLIENT_MAJOR_VERSION, 1);
     client->SetUnsignedIntegerValue(WPD_CLIENT_MINOR_VERSION, 0);
     client->SetUnsignedIntegerValue(WPD_CLIENT_REVISION, 0);
@@ -405,7 +405,7 @@ bool CanonCamera::Connect(std::string& error) {
     }
     {
         wchar_t v[8];
-        dumpEvents_ = GetEnvironmentVariableW(L"EOSCAM_DUMP_EVENTS", v, 8) > 0 && v[0] == L'1';
+        dumpEvents_ = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_DUMP_EVENTS", v, 8) > 0 && v[0] == L'1';
     }
     connected_ = true;
     consecutiveErrors_ = 0;
@@ -488,4 +488,4 @@ CanonCamera::Frame CanonCamera::GetFrame(std::vector<uint8_t>& jpeg) {
     return Frame::Ok;
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

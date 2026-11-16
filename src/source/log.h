@@ -1,4 +1,4 @@
-// Simple log in C:\ProgramData\EosCam\source.log (the DLL runs inside a service, without a console; the
+// Simple log in C:\ProgramData\CanonEosWebcam\source.log (the DLL runs inside a service, without a console; the
 // deploy script grants LocalService write access to that folder). Messages are in English.
 #pragma once
 
@@ -9,7 +9,7 @@
 
 #include "shared.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 inline void Log(const char* fmt, ...) {
     static SRWLOCK lock = SRWLOCK_INIT;
@@ -44,4 +44,4 @@ inline void Log(const char* fmt, ...) {
     ReleaseSRWLockExclusive(&lock);
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

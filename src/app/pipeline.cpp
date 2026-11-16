@@ -17,7 +17,7 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
@@ -239,14 +239,14 @@ bool FramePipeline::Impl::Init() {
     if (FAILED(hr)) Log("pipeline: failed to start WIC (hr=0x%08lX)", (unsigned long)hr);
     // Measured (1080p, SR+AR and everything on): the CPU work of a frame fits in ~15-25 ms on a single thread
     // (< 33 ms), and waking the pool on every frame costs far more CPU than it gains (SR+AR: 21% of a core with
-    // 1 thread versus 30% with 4). Hence the default of 1; EOSCAM_THREADS (1..8) trades CPU for latency.
+    // 1 thread versus 30% with 4). Hence the default of 1; CANON_EOS_WEBCAM_THREADS (1..8) trades CPU for latency.
     int threads = 1;
     wchar_t tv[8];
-    if (GetEnvironmentVariableW(L"EOSCAM_THREADS", tv, 8) > 0 && tv[0] >= L'1' && tv[0] <= L'8') threads = tv[0] - L'0';
+    if (GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_THREADS", tv, 8) > 0 && tv[0] >= L'1' && tv[0] <= L'8') threads = tv[0] - L'0';
     pool = std::make_unique<ThreadPool>(threads);
 
     wchar_t v[8];
-    forceCpuBlur = GetEnvironmentVariableW(L"EOSCAM_FORCE_CPU_BLUR", v, 8) > 0 && v[0] == L'1';
+    forceCpuBlur = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_FORCE_CPU_BLUR", v, 8) > 0 && v[0] == L'1';
 
     maxineOk = MaxineRuntime::Init();
     {
@@ -715,4 +715,4 @@ bool FramePipeline::GetPreview(std::vector<uint8_t>& nv12, uint64_t& frameNo) {
     return true;
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

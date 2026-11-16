@@ -7,7 +7,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 // ---------------------------------------------------------------- ThreadPool
 
@@ -708,4 +708,4 @@ void CoverBgr(const uint8_t* src, int sw, int sh, int spitch, int dw, int dh, st
     }
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

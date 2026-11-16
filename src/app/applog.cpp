@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <mutex>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 void Log(const char* fmt, ...) {
     static std::mutex mu;
@@ -22,4 +22,4 @@ void Log(const char* fmt, ...) {
     fflush(stdout);
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

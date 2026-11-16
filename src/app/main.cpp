@@ -1,11 +1,11 @@
-// eoscam.exe — bridge between the Canon EOS (PTP/WPD) and the Windows 11 virtual camera.
+// canon-eos-webcam.exe — bridge between the Canon EOS (PTP/WPD) and the Windows 11 virtual camera.
 //
-//   eoscam run         keeps running: turns Live View on only when some program uses the webcam
-//   eoscam panel       opens the control panel (of the running eoscam-bg; starts it if needed)
-//   eoscam install     creates the virtual camera "Canon EOS Webcam (eoscam)" (persistent)
-//   eoscam uninstall   removes the virtual camera
-//   eoscam test        opens the virtual camera like a regular app and measures frames/s and CPU
-//   eoscam process     runs a JPEG through the image pipeline (no camera) and measures the timings
+//   canon-eos-webcam run         keeps running: turns Live View on only when some program uses the webcam
+//   canon-eos-webcam panel       opens the control panel (of the running canon-eos-webcam-bg; starts it if needed)
+//   canon-eos-webcam install     creates the virtual camera "Canon EOS Webcam" (persistent)
+//   canon-eos-webcam uninstall   removes the virtual camera
+//   canon-eos-webcam test        opens the virtual camera like a regular app and measures frames/s and CPU
+//   canon-eos-webcam process     runs a JPEG through the image pipeline (no camera) and measures the timings
 //
 // Logs and diagnostic output are in English; the everyday commands speak the user's language (i18n.h).
 
@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "applog.h"
+#include "autostart.h"
 #include "bridge.h"
 #include "canon_camera.h"
 #include "color.h"
@@ -35,11 +36,11 @@
 #include "shared.h"
 
 using Microsoft::WRL::ComPtr;
-using namespace eoscam;
+using namespace canon_eos_webcam;
 
 static std::atomic<bool> g_stop{false};
 
-#ifdef EOSCAM_BACKGROUND
+#ifdef CANON_EOS_WEBCAM_BACKGROUND
 constexpr bool kWithUi = true;
 #else
 constexpr bool kWithUi = false;
@@ -50,29 +51,29 @@ static BOOL WINAPI CtrlHandler(DWORD) {
     return TRUE;
 }
 
-#define Out eoscam::Log
+#define Out canon_eos_webcam::Log
 
 static double FtSec(const FILETIME& f) { return double((ULONGLONG(f.dwHighDateTime) << 32) | f.dwLowDateTime) / 1e7; }
 
 // =====================================================================================
 // run
 
-// Only one producer at a time (eoscam run or eoscam-bg), otherwise both fight over the camera.
+// Only one producer at a time (canon-eos-webcam run or canon-eos-webcam-bg), otherwise both fight over the camera.
 static bool AcquireSingleInstance(HANDLE& single, HANDLE& stopEvent) {
-    single = CreateMutexW(nullptr, TRUE, L"Local\\EosCamProducer");
+    single = CreateMutexW(nullptr, TRUE, L"Local\\CanonEosWebcamProducer");
     if (single && GetLastError() == ERROR_ALREADY_EXISTS) {
         Out("%s", Tr(Str::CliOtherInstance));
         CloseHandle(single);
         single = nullptr;
         return false;
     }
-    // "eoscam stop" signals this event to shut down with Live View properly turned off.
-    stopEvent = CreateEventW(nullptr, TRUE, FALSE, L"Local\\EosCamStop");
+    // "canon-eos-webcam stop" signals this event to shut down with Live View properly turned off.
+    stopEvent = CreateEventW(nullptr, TRUE, FALSE, L"Local\\CanonEosWebcamStop");
     if (stopEvent) ResetEvent(stopEvent);
     return true;
 }
 
-// withUi: in eoscam-bg the main thread runs the tray icon and the panel, and the bridge gets its own thread.
+// withUi: in canon-eos-webcam-bg the main thread runs the tray icon and the panel, and the bridge gets its own thread.
 static int CmdRun(bool withUi) {
     HANDLE single = nullptr, stopEvent = nullptr;
     if (!AcquireSingleInstance(single, stopEvent)) return 1;
@@ -89,7 +90,7 @@ static int CmdRun(bool withUi) {
         PanelApp app(bridge, store);
         std::thread worker([&] {
             bridge.Run(stopEvent, &g_stop);
-            app.RequestQuit();  // "eoscam stop", Ctrl+C or "Exit" in the menu: closes the window too
+            app.RequestQuit();  // "canon-eos-webcam stop", Ctrl+C or "Exit" in the menu: closes the window too
         });
         rc = app.Run();
         bridge.RequestStop();
@@ -102,17 +103,10 @@ static int CmdRun(bool withUi) {
 }
 
 // =====================================================================================
-// start / stop / autostart (background version: eoscam-bg.exe)
-
-static std::wstring ExeDir() {
-    wchar_t path[MAX_PATH];
-    GetModuleFileNameW(nullptr, path, MAX_PATH);
-    std::wstring p = path;
-    return p.substr(0, p.find_last_of(L'\\') + 1);
-}
+// start / stop / autostart (background version: canon-eos-webcam-bg.exe)
 
 static bool BackgroundRunning() {
-    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\EosCamProducer");
+    HANDLE m = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\CanonEosWebcamProducer");
     if (!m) return false;
     CloseHandle(m);
     return true;
@@ -120,7 +114,7 @@ static bool BackgroundRunning() {
 
 static int CmdStart() {
     if (BackgroundRunning()) { printf("%s", Tr(Str::CliAlreadyRunning)); return 0; }
-    std::wstring exe = ExeDir() + L"eoscam-bg.exe";
+    std::wstring exe = ExeDirectory() + L"canon-eos-webcam-bg.exe";
     std::wstring cmdline = L"\"" + exe + L"\"";
     STARTUPINFOW si{sizeof si};
     PROCESS_INFORMATION pi{};
@@ -136,7 +130,7 @@ static int CmdStart() {
 }
 
 static int CmdStop() {
-    HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\EosCamStop");
+    HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, L"Local\\CanonEosWebcamStop");
     if (!ev) { printf("%s", Tr(Str::CliNotRunning)); return 0; }
     SetEvent(ev);
     CloseHandle(ev);
@@ -145,20 +139,16 @@ static int CmdStop() {
     return 0;
 }
 
-static const wchar_t kRunKey[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-
 static int CmdAutostart(const std::wstring& arg) {
     if (arg == L"on") {
-        std::wstring value = L"\"" + ExeDir() + L"eoscam-bg.exe\"";
-        LSTATUS s = RegSetKeyValueW(HKEY_CURRENT_USER, kRunKey, L"EosCam", REG_SZ, value.c_str(),
-                                    DWORD((value.size() + 1) * sizeof(wchar_t)));
+        LSTATUS s = SetAutostart(true);
         if (s != ERROR_SUCCESS) { printf(Tr(Str::CliRegWriteFailed), (long)s); return 1; }
-        printf(Tr(Str::CliAutostartOn), W2U(value.c_str()).c_str());
+        printf(Tr(Str::CliAutostartOn), W2U(AutostartCommand().c_str()).c_str());
         return CmdStart();
     }
     if (arg == L"off") {
-        LSTATUS s = RegDeleteKeyValueW(HKEY_CURRENT_USER, kRunKey, L"EosCam");
-        if (s != ERROR_SUCCESS && s != ERROR_FILE_NOT_FOUND) {
+        LSTATUS s = SetAutostart(false);
+        if (s != ERROR_SUCCESS) {
             printf(Tr(Str::CliRegDeleteFailed), (long)s);
             return 1;
         }
@@ -215,13 +205,21 @@ static int CmdStatus() {
 // =====================================================================================
 // install / uninstall
 
-static HRESULT CreateVCam(ComPtr<IMFVirtualCamera>& vc) {
+// Name of the virtual camera created by the versions released under the old name (eoscam).
+static constexpr wchar_t kLegacyCameraName[] = L"Canon EOS Webcam (eoscam)";
+
+static HRESULT CreateVCam(ComPtr<IMFVirtualCamera>& vc, const wchar_t* name = kCameraName) {
     return MFCreateVirtualCamera(MFVirtualCameraType_SoftwareCameraSource, MFVirtualCameraLifetime_System,
-                                 MFVirtualCameraAccess_CurrentUser, kCameraName, EOSCAM_CLSID_STRING, nullptr, 0, &vc);
+                                 MFVirtualCameraAccess_CurrentUser, name, CANON_EOS_WEBCAM_CLSID_STRING, nullptr, 0,
+                                 &vc);
 }
 
 static int CmdInstall() {
     ComPtr<IMFVirtualCamera> vc;
+    // An upgrade from the old name leaves a second camera behind; remove it (no-op if it doesn't exist).
+    if (SUCCEEDED(CreateVCam(vc, kLegacyCameraName)) && SUCCEEDED(vc->Remove()))
+        Out("Removed the virtual camera of the old version (\"%S\").", kLegacyCameraName);
+    vc.Reset();
     HRESULT hr = CreateVCam(vc);
     if (FAILED(hr)) {
         printf(Tr(Str::CliInstallFailed), (unsigned long)hr);
@@ -283,12 +281,12 @@ static bool SaveBgraAsJpeg(const std::wstring& path, const uint8_t* bgra, UINT w
 
 static int TestWithActivate(IMFActivate* sel, double seconds, UINT wantW, UINT wantH, const std::wstring& outPath);
 
-// Loads eoscam-source.dll (next to the exe) straight into this process, without registration or Frame Server.
+// Loads canon-eos-webcam-source.dll (next to the exe) straight into this process, without registration or Frame Server.
 static HRESULT ActivateDirect(ComPtr<IMFActivate>& act) {
     wchar_t path[MAX_PATH];
     GetModuleFileNameW(nullptr, path, MAX_PATH);
     std::wstring p = path;
-    p = p.substr(0, p.find_last_of(L'\\') + 1) + L"eoscam-source.dll";
+    p = p.substr(0, p.find_last_of(L'\\') + 1) + L"canon-eos-webcam-source.dll";
     HMODULE m = LoadLibraryW(p.c_str());
     if (!m) return HRESULT_FROM_WIN32(GetLastError());
     using GetClassObjectFn = HRESULT(STDAPICALLTYPE*)(REFCLSID, REFIID, void**);
@@ -324,14 +322,15 @@ static int CmdTest(double seconds, UINT wantW, UINT wantH, const std::wstring& o
         UINT32 len = 0;
         devs[i]->GetAllocatedString(MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &name, &len);
         // Windows appends " (Windows Virtual Camera)" to the name (localized)
-        bool match = name && wcsncmp(name, kCameraName, wcslen(kCameraName)) == 0;
+        bool match = name && wcsncmp(name, kCameraName, wcslen(kCameraName)) == 0 &&
+                     wcsncmp(name, kLegacyCameraName, wcslen(kLegacyCameraName)) != 0;
         printf("  %s %s\n", match ? "->" : "  ", W2U(name).c_str());
         if (match && !sel) sel = devs[i];
         CoTaskMemFree(name);
     }
     for (UINT32 i = 0; i < n; i++) devs[i]->Release();
     CoTaskMemFree(devs);
-    if (!sel) { printf("\nThe virtual camera did not show up. Run \"eoscam install\" first.\n"); return 1; }
+    if (!sel) { printf("\nThe virtual camera did not show up. Run \"canon-eos-webcam install\" first.\n"); return 1; }
     return TestWithActivate(sel.Get(), seconds, wantW, wantH, outPath);
 }
 
@@ -464,7 +463,7 @@ static bool WarmUpPipeline(FramePipeline& pipe, const std::vector<uint8_t>& jpeg
 
 static int CmdProcess(const std::wstring& inPath, const std::wstring& outPath, int bench) {
     if (inPath.empty()) {
-        printf("usage: eoscam process input.jpg [--out output.jpg] [--bench N]\n");
+        printf("usage: canon-eos-webcam process input.jpg [--out output.jpg] [--bench N]\n");
         return 2;
     }
     std::vector<uint8_t> jpeg = ReadWholeFile(inPath);
@@ -535,7 +534,7 @@ static void PrintCameraProps(CanonCamera& cam) {
 // and, after each one, saves a frame processed by the pipeline (to compare the effect on the image).
 static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& outPath) {
     if (BackgroundRunning()) {
-        printf("Stop eoscam first (eoscam stop): only one program can talk to the camera.\n");
+        printf("Stop canon-eos-webcam first (canon-eos-webcam stop): only one program can talk to the camera.\n");
         return 1;
     }
     CanonCamera cam;
@@ -622,7 +621,7 @@ static int CmdCam(const std::vector<std::wstring>& sets, const std::wstring& out
 }
 
 // =====================================================================================
-// panel: opens the panel of the running eoscam-bg (starts it if needed)
+// panel: opens the panel of the running canon-eos-webcam-bg (starts it if needed)
 
 static int CmdPanel() {
     auto find = [] { return FindWindowW(kBridgeWindowClass, nullptr); };
@@ -652,7 +651,7 @@ static int Dispatch(int argc, wchar_t** argv) {
     UINT w = kFrameWidth, h = kFrameHeight;
     int bench = 0;
     std::vector<std::wstring> sets;
-    std::wstring out = L"eoscam-test.jpg", positional;
+    std::wstring out = L"canon-eos-webcam-test.jpg", positional;
     bool direct = false;
     for (int i = 2; i < argc; i++) {
         std::wstring a = argv[i];
@@ -671,15 +670,15 @@ static int Dispatch(int argc, wchar_t** argv) {
     if (cmd == L"autostart") return CmdAutostart(positional);
     if (cmd == L"panel") return CmdPanel();
 
-    // In eoscam-bg the main thread is the UI thread (STA apartment, needed by the file dialog); the bridge
+    // In canon-eos-webcam-bg the main thread is the UI thread (STA apartment, needed by the file dialog); the bridge
     // initializes its own COM on its thread.
     bool ui = cmd == L"run" && kWithUi;
     if (FAILED(CoInitializeEx(nullptr, ui ? COINIT_APARTMENTTHREADED : COINIT_MULTITHREADED))) return 1;
     if (cmd != L"run") MFStartup(MF_VERSION);
     int rc;
     if (cmd == L"run") rc = CmdRun(kWithUi);
-    else if (cmd == L"cam") rc = CmdCam(sets, out == L"eoscam-test.jpg" ? L"eoscam-cam.jpg" : out);
-    else if (cmd == L"process") rc = CmdProcess(positional, out == L"eoscam-test.jpg" ? L"eoscam-process.jpg" : out, bench);
+    else if (cmd == L"cam") rc = CmdCam(sets, out == L"canon-eos-webcam-test.jpg" ? L"canon-eos-webcam-cam.jpg" : out);
+    else if (cmd == L"process") rc = CmdProcess(positional, out == L"canon-eos-webcam-test.jpg" ? L"canon-eos-webcam-process.jpg" : out, bench);
     else if (cmd == L"install") rc = CmdInstall();
     else if (cmd == L"uninstall") rc = CmdUninstall();
     else if (cmd == L"status") rc = CmdStatus();
@@ -691,21 +690,21 @@ static int Dispatch(int argc, wchar_t** argv) {
     return rc;
 }
 
-#ifdef EOSCAM_BACKGROUND
+#ifdef CANON_EOS_WEBCAM_BACKGROUND
 
-// eoscam-bg.exe: the same bridge as "eoscam run", without a console, logging to ProgramData\EosCam\eoscam.log.
+// canon-eos-webcam-bg.exe: the same bridge as "canon-eos-webcam run", without a console, logging to ProgramData\CanonEosWebcam\canon-eos-webcam.log.
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     CreateDirectoryW(kDataDir, nullptr);
-    std::wstring log = std::wstring(kDataDir) + L"\\eoscam.log";
+    std::wstring log = std::wstring(kDataDir) + L"\\canon-eos-webcam.log";
     wchar_t envLog[MAX_PATH];
-    DWORD nl = GetEnvironmentVariableW(L"EOSCAM_LOG", envLog, MAX_PATH);  // for tests only
+    DWORD nl = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_LOG", envLog, MAX_PATH);  // for tests only
     if (nl > 0 && nl < MAX_PATH) log = envLog;
     WIN32_FILE_ATTRIBUTE_DATA fa{};
     if (GetFileAttributesExW(log.c_str(), GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 2u * 1024 * 1024)
         DeleteFileW(log.c_str());  // starts the log over when it exceeds 2 MB
     FILE* f = nullptr;
     _wfreopen_s(&f, log.c_str(), L"a", stdout);
-    wchar_t* args[] = {const_cast<wchar_t*>(L"eoscam-bg"), const_cast<wchar_t*>(L"run")};
+    wchar_t* args[] = {const_cast<wchar_t*>(L"canon-eos-webcam-bg"), const_cast<wchar_t*>(L"run")};
     return Dispatch(2, args);
 }
 

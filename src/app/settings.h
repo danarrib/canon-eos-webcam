@@ -1,5 +1,5 @@
 // User settings (image adjustments, AI effects, virtual background and panel window), persisted in
-// %APPDATA%\EosCam\settings.ini (or in the file pointed to by EOSCAM_SETTINGS).
+// %APPDATA%\CanonEosWebcam\settings.ini (or in the file pointed to by CANON_EOS_WEBCAM_SETTINGS).
 //
 // A single object shared between the panel thread (which changes it) and the processing thread (which
 // reads it once per frame). Each change bumps a version counter and schedules the write to disk with a
@@ -19,7 +19,7 @@
 #include <string>
 #include <thread>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 enum class FxLevel : int { Off = 0, Con = 1, Agg = 2 };
 enum class BgMode : int { Solid = 0, Blur = 1, Image = 2 };
@@ -82,7 +82,7 @@ public:
     SettingsStore(const SettingsStore&) = delete;
     SettingsStore& operator=(const SettingsStore&) = delete;
 
-    // File path: EOSCAM_SETTINGS, otherwise %APPDATA%\EosCam\settings.ini.
+    // File path: CANON_EOS_WEBCAM_SETTINGS, otherwise %APPDATA%\CanonEosWebcam\settings.ini.
     static std::wstring DefaultPath();
 
     // Reads the file (missing or invalid values keep their defaults) and starts the writer thread.
@@ -123,4 +123,4 @@ private:
     std::thread writer_;
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

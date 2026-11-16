@@ -25,11 +25,11 @@
 
 using Microsoft::WRL::ComPtr;
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
-constexpr wchar_t kPanelClass[] = L"EosCamPanelWindow";
+constexpr wchar_t kPanelClass[] = L"CanonEosWebcamPanelWindow";
 constexpr UINT kMsgTray = WM_APP + 2;
 constexpr UINT_PTR kTimerPreview = 1, kTimerStatus = 2;
 
@@ -905,9 +905,9 @@ struct PanelApp::Impl {
     void ShowPanel() {
         if (!panel) CreatePanel();
         if (!panel) return;
-        // EOSCAM_PANEL_NOACTIVATE=1 (automated tests): shows the window without stealing the focus
+        // CANON_EOS_WEBCAM_PANEL_NOACTIVATE=1 (automated tests): shows the window without stealing the focus
         wchar_t na[4];
-        bool noActivate = GetEnvironmentVariableW(L"EOSCAM_PANEL_NOACTIVATE", na, 4) > 0 && na[0] == L'1';
+        bool noActivate = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_PANEL_NOACTIVATE", na, 4) > 0 && na[0] == L'1';
         if (noActivate) {
             ShowWindow(panel, SW_SHOWNOACTIVATE);
         } else {
@@ -1229,15 +1229,15 @@ int PanelApp::Run() {
     pc.hIconSm = d.iconSmall;
     RegisterClassExW(&pc);
 
-    // hidden window (top-level, so "eoscam panel" finds it with FindWindow) that receives the tray messages
-    d.trayWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kBridgeWindowClass, L"eoscam", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
+    // hidden window (top-level, so "canon-eos-webcam panel" finds it with FindWindow) that receives the tray messages
+    d.trayWnd = CreateWindowExW(WS_EX_TOOLWINDOW, kBridgeWindowClass, L"canon-eos-webcam", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
                                 d.inst, &d);
     if (!d.trayWnd) {
         Log("panel: couldn't create the tray window (error %lu)", GetLastError());
         return 1;
     }
     d.AddTrayIcon();
-    Log("Panel: tray icon created (\"eoscam panel\" opens the window).");
+    Log("Panel: tray icon created (\"canon-eos-webcam panel\" opens the window).");
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -1261,4 +1261,4 @@ void PanelApp::RequestQuit() {
     if (d_->uiThread) PostThreadMessageW(d_->uiThread, WM_QUIT, 0, 0);
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

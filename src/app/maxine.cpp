@@ -11,7 +11,7 @@
 // load NVVideoEffects.dll from. Filled in by MaxineRuntime::Init().
 char* g_nvVFXSDKPath = nullptr;
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
@@ -82,8 +82,8 @@ bool LocateRuntime(std::wstring& dir, Msg& why) {
 // Does not depend on the CUDA Toolkit: only two functions of cudart64_12.dll, with prototypes declared here.
 void ConfigureCudaBlocking(const std::wstring& dir) {
     wchar_t v[8];
-    if (GetEnvironmentVariableW(L"EOSCAM_CUDA_SPIN", v, 8) > 0 && v[0] == L'1') {
-        Log("cuda: busy waiting (spin) kept because of EOSCAM_CUDA_SPIN=1");
+    if (GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_CUDA_SPIN", v, 8) > 0 && v[0] == L'1') {
+        Log("cuda: busy waiting (spin) kept because of CANON_EOS_WEBCAM_CUDA_SPIN=1");
         return;
     }
     HMODULE rt = LoadLibraryExW((dir + L"\\cudart64_12.dll").c_str(), nullptr,
@@ -359,4 +359,4 @@ bool BgBlurEffect::Run(float strength, std::string& err) {
     return true;
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

@@ -4,7 +4,7 @@ tools/eosprobe/build/
 
 # Frames captured by the test tools
 eosprobe-out/
-eoscam-test.jpg
+canon-eos-webcam-test.jpg
 
 # Downloaded dependencies (third-party SDKs we don't version)
 third_party/*/download/

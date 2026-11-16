@@ -1,10 +1,10 @@
-# eoscam v2: GPU processing (NVIDIA Maxine) and control panel
+# canon-eos-webcam v2: GPU processing (NVIDIA Maxine) and control panel
 
 Status: specification approved by the user on 2026-11-16 (implemented). Read it together with `README.md`.
 
 ## Goal
 
-1. Move image processing to the bridge (`eoscam-bg.exe` / `eoscam run`), on the GPU, with the NVIDIA
+1. Move image processing to the bridge (`canon-eos-webcam-bg.exe` / `canon-eos-webcam run`), on the GPU, with the NVIDIA
    Maxine Video Effects, and deliver **1920×1080** to the virtual camera.
 2. Create a **control panel** (tray icon + window) with image adjustments, AI effects, virtual
    background and the camera's own settings, applied live and persisted.
@@ -15,10 +15,10 @@ Status: specification approved by the user on 2026-11-16 (implemented). Read it 
   `GetViewFinderData` (1056×704 JPEG, 4:2:2, ~29 fps). Turns Live View back on by itself if it stops.
 - `src/app/main.cpp`: commands `run/start/stop/autostart/install/uninstall/status/list/test`.
   `CmdRun` is the bridge loop: opens the channel, turns the camera on when `ConsumerActive()`, publishes
-  the JPEGs. `eoscam-bg.exe` is the same code with `EOSCAM_BACKGROUND` (WIN32, log to a file).
-- `src/common/shared.h`: channel `Global\EosCamFrames1` (the DLL creates it; the app opens it), 3 slots
-  with a seqlock, consumer and producer heartbeats. `EOSCAM_LOCAL=1` uses `Local\`.
-- `src/source/*`: `eoscam-source.dll` (Frame Server, LocalService, session 0). Decodes the JPEG with
+  the JPEGs. `canon-eos-webcam-bg.exe` is the same code with `CANON_EOS_WEBCAM_BACKGROUND` (WIN32, log to a file).
+- `src/common/shared.h`: channel `Global\CanonEosWebcamFrames1` (the DLL creates it; the app opens it), 3 slots
+  with a seqlock, consumer and producer heartbeats. `CANON_EOS_WEBCAM_LOCAL=1` uses `Local\`.
+- `src/source/*`: `canon-eos-webcam-source.dll` (Frame Server, LocalService, session 0). Decodes the JPEG with
   WIC, crops 16:9 **anchored at the bottom**, scales to 1280×720 and converts to NV12. Shows warning
   screens (`FrameRenderer::RenderMessage`) when there are no frames.
 
@@ -35,7 +35,7 @@ Camera ──PTP──> bridge (user session)
                  │    → image adjustments (brightness/contrast/gamma/temperature/tint/saturation)
                  │    → background compositing (solid color / blur / image) using the mask
                  │    → NV12 1920×1080 → shared channel
-                 ├─ UI thread (tray + panel), eoscam-bg only
+                 ├─ UI thread (tray + panel), canon-eos-webcam-bg only
                  └─ PTP command queue for the camera settings (run by the capture thread, which is
                     the only owner of the PTP session)
 DLL (Frame Server): copies the ready NV12 into the sample. Only decodes/renders the warning screens.
@@ -43,7 +43,7 @@ DLL (Frame Server): copies the ready NV12 into the sample. Only decodes/renders 
 
 ### Shared channel (v2 layout)
 
-- New names: `Global\EosCamFrames2` / `Global\EosCamFrameReady2` (and `Local\…2`). This way an
+- New names: `Global\CanonEosWebcamFrames2` / `Global\CanonEosWebcamFrameReady2` (and `Local\…2`). This way an
   installed v1 and v2 never get mixed up. `kLayoutVersion = 2`.
 - The slots now hold **NV12 1920×1080** (3,110,400 bytes). Put in the slot header: `format` (NV12
   fourcc), `width`, `height`, `stride`. Maximum slot size: 4 MB.
@@ -56,7 +56,7 @@ DLL (Frame Server): copies the ready NV12 into the sample. Only decodes/renders 
 - `RenderJpeg` is no longer used on the normal path. The DLL copies the NV12 from the slot (validating
   the size). Keep `RenderMessage` for the warning screens, now at 1080p.
 - If the slot comes in a size different from the negotiated format, show a warning screen
-  ("incompatible eoscam versions: reinstall"), never crash.
+  ("incompatible canon-eos-webcam versions: reinstall"), never crash.
 
 ### Pipeline in the bridge
 
@@ -131,19 +131,19 @@ reference**; it is LGPL, so don't copy code, only values and formats.
   - Auto Lighting Optimizer, if announced
 - Panel commands go into a thread-safe queue, run by the capture thread between frames. Failures show
   up on the panel ("the camera refused: automatic mode?").
-- **eoscam does not persist the camera settings**: the camera itself keeps them.
+- **canon-eos-webcam does not persist the camera settings**: the camera itself keeps them.
 
 ### Settings
 
-- File `%APPDATA%\EosCam\settings.ini` (`GetPrivateProfileString`/`WritePrivateProfileString`), with the
+- File `%APPDATA%\CanonEosWebcam\settings.ini` (`GetPrivateProfileString`/`WritePrivateProfileString`), with the
   sections `[image]`, `[effects]`, `[background]` and `[ui]`.
 - A `Settings` struct with a version counter, protected by a mutex, that the pipeline reads once per
   frame. On change, write to disk with a debounce (~500 ms).
 
-### Panel (`eoscam-bg.exe` only)
+### Panel (`canon-eos-webcam-bg.exe` only)
 
 - **Tray icon** (`Shell_NotifyIcon`). Menu: "Open panel", "Start with Windows" (checked according to
-  `HKCU\…\Run\EosCam`), "Exit". Double-click opens the panel.
+  `HKCU\…\Run\CanonEosWebcam`), "Exit". Double-click opens the panel.
 - **Window** in native Win32 (no new dependencies), with a live preview on the left (~640×360, ~15 fps,
   from the last processed frame in memory, converted to BGRA and drawn with `StretchDIBits`) and
   controls on the right, in groups:
@@ -160,10 +160,10 @@ reference**; it is LGPL, so don't copy code, only values and formats.
 - **With the panel open, the bridge turns Live View on** even when no program is using the webcam (the
   panel counts as a consumer), so settings can be adjusted before a call. On close, back to the normal
   rule (off 5 s after there is no consumer).
-- New `eoscam panel` command: opens the panel of the already running `eoscam-bg` (find its hidden window
+- New `canon-eos-webcam panel` command: opens the panel of the already running `canon-eos-webcam-bg` (find its hidden window
   and send it a message); if it is not running, start it and then open the panel.
-- The capture loop now runs on its own thread in `eoscam-bg`; the main thread runs the message queue.
-  `eoscam run` (console) uses the same pipeline, without tray or panel.
+- The capture loop now runs on its own thread in `canon-eos-webcam-bg`; the main thread runs the message queue.
+  `canon-eos-webcam run` (console) uses the same pipeline, without tray or panel.
 
 ## Out of scope
 
@@ -173,7 +173,7 @@ reference**; it is LGPL, so don't copy code, only values and formats.
 ## Acceptance criteria
 
 1. Builds without warnings (`/W4`) with `cmake --build build --config Release`.
-2. Local test (no admin, see "How to test"): `eoscam test --direct --size 1920x1080` delivers ≥ 25 fps
+2. Local test (no admin, see "How to test"): `canon-eos-webcam test --direct --size 1920x1080` delivers ≥ 25 fps
    with Super Resolution + Artifact Reduction on in `settings.ini`, and the saved frame looks good (open
    the JPG and check: crop from the bottom, colors, mask edges).
 3. Every effect, mode and background mode tested at least once, with a frame saved as evidence in a
@@ -188,10 +188,10 @@ reference**; it is LGPL, so don't copy code, only values and formats.
 
 ## How to test without administrator rights
 
-- First of all, stop the installed bridge (it holds the `Local\EosCamProducer` mutex):
-  `& "C:\Program Files\EosCam\eoscam.exe" stop`. **When done, start it again:**
-  `& "C:\Program Files\EosCam\eoscam.exe" start` (the user's webcam depends on it).
-- Full pipeline without the Frame Server: with `$env:EOSCAM_LOCAL='1'`, run
-  `build\Release\eoscam.exe run` in the background and `build\Release\eoscam.exe test --direct`.
+- First of all, stop the installed bridge (it holds the `Local\CanonEosWebcamProducer` mutex):
+  `& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" stop`. **When done, start it again:**
+  `& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" start` (the user's webcam depends on it).
+- Full pipeline without the Frame Server: with `$env:CANON_EOS_WEBCAM_LOCAL='1'`, run
+  `build\Release\canon-eos-webcam.exe run` in the background and `build\Release\canon-eos-webcam.exe test --direct`.
 - The camera must be on; it is already connected over USB.
 - Do **not** run `scripts\deploy.ps1` or anything that asks for UAC.

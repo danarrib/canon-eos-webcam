@@ -1,7 +1,7 @@
 // Media source for a Windows 11 virtual camera (MFCreateVirtualCamera).
 //
 // The Frame Server creates the Activator (CLSID registered in HKLM), calls ActivateObject and gets the
-// MediaSource. It exposes a single NV12 video stream at 1920x1080. The frames come from eoscam.exe through
+// MediaSource. It exposes a single NV12 video stream at 1920x1080. The frames come from canon-eos-webcam.exe through
 // shared memory (shared.h); without frames, the stream shows a screen explaining what is missing.
 
 #include <windows.h>
@@ -39,13 +39,13 @@ public:
 
 using namespace Microsoft::WRL;
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
 struct VideoSize { UINT w, h; };
 // 1920x1080 only: with several options, some programs first opened at 640x480 (4:3) and switched to 16:9 a
-// second later. The bridge (eoscam.exe) delivers the NV12 1920x1080 frame already processed on the GPU
+// second later. The bridge (canon-eos-webcam.exe) delivers the NV12 1920x1080 frame already processed on the GPU
 // (16:9 crop, AI effects, image adjustments and background); this DLL only copies the frame.
 constexpr VideoSize kSizes[] = {{kFrameWidth, kFrameHeight}};
 constexpr UINT kFps = 30;
@@ -687,7 +687,7 @@ private:
 
 CoCreatableClass(Activator);
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam
 
 // =====================================================================================
 // DLL exports
@@ -708,7 +708,7 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, LPVOID* ppv) {
 
 STDAPI DllCanUnloadNow() { return Module<InProc>::GetModule().Terminate() ? S_OK : S_FALSE; }
 
-static const wchar_t kClsidKey[] = L"Software\\Classes\\CLSID\\" EOSCAM_CLSID_STRING;
+static const wchar_t kClsidKey[] = L"Software\\Classes\\CLSID\\" CANON_EOS_WEBCAM_CLSID_STRING;
 
 static HRESULT SetRegString(HKEY root, const wchar_t* sub, const wchar_t* name, const wchar_t* value) {
     HKEY k = nullptr;
@@ -724,7 +724,7 @@ STDAPI DllRegisterServer() {
     wchar_t path[MAX_PATH];
     if (!GetModuleFileNameW(g_module, path, MAX_PATH)) return HRESULT_FROM_WIN32(GetLastError());
     std::wstring inproc = std::wstring(kClsidKey) + L"\\InprocServer32";
-    HRESULT hr = SetRegString(HKEY_LOCAL_MACHINE, kClsidKey, nullptr, L"EOS Webcam Source (eoscam)");
+    HRESULT hr = SetRegString(HKEY_LOCAL_MACHINE, kClsidKey, nullptr, L"EOS Webcam Source (canon-eos-webcam)");
     if (SUCCEEDED(hr)) hr = SetRegString(HKEY_LOCAL_MACHINE, inproc.c_str(), nullptr, path);
     if (SUCCEEDED(hr)) hr = SetRegString(HKEY_LOCAL_MACHINE, inproc.c_str(), L"ThreadingModel", L"Both");
     return hr;

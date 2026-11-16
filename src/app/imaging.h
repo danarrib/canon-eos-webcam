@@ -15,7 +15,7 @@
 
 #include "settings.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 // Simple pool: ParallelFor(n, fn) calls fn(i) for i in [0, n) on the pool threads (and on the caller).
 class ThreadPool {
@@ -101,4 +101,4 @@ constexpr int kOutH = 1080;
 
 void RenderFinal(const FinalParams& p, ThreadPool& pool);
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

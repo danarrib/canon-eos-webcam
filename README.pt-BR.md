@@ -1,4 +1,4 @@
-# eoscam: Canon EOS como webcam nativa do Windows 11
+# canon-eos-webcam: Canon EOS como webcam nativa do Windows 11
 
 [English](README.md) · **Português (Brasil)**
 
@@ -7,7 +7,7 @@ drivers da Canon: só o driver PTP/WPD padrão do Windows e a API de câmera vir
 Windows 11 (`MFCreateVirtualCamera`). A versão 2 processa a imagem na GPU com o
 **NVIDIA Maxine** e traz um painel de controle com ícone na bandeja.
 
-| | EOS Webcam Utility | eoscam v2 |
+| | EOS Webcam Utility | canon-eos-webcam v2 |
 |---|---|---|
 | Resolução | ~480×360 | **1920×1080** (recorte 16:9 do Live View de 1056×704, com Super Resolution opcional) |
 | Quadros/s | — | ~28 (o Live View da T3 entrega ~29) |
@@ -19,7 +19,7 @@ Windows 11 (`MFCreateVirtualCamera`). A versão 2 processa a imagem na GPU com o
 ## Como funciona
 
 ```
-Canon T3 ──USB/PTP (driver WPD)──> eoscam-bg.exe / eoscam run          (sessão do usuário)
+Canon T3 ──USB/PTP (driver WPD)──> canon-eos-webcam-bg.exe / canon-eos-webcam run          (sessão do usuário)
                                     thread de captura: PTP, Live View, ajustes da câmera
                                        │ JPEG 1056×704 (sempre o mais recente)
                                     thread de processamento:
@@ -29,27 +29,27 @@ Canon T3 ──USB/PTP (driver WPD)──> eoscam-bg.exe / eoscam run          (
                                        → [Super Resolution 2×]                  GPU (Maxine)
                                        → ajustes + fundo + NV12 1920×1080       CPU
                                        │
-                                  memória compartilhada Global\EosCamFrames2
+                                  memória compartilhada Global\CanonEosWebcamFrames2
                                        │  quadros NV12 1920×1080 prontos
                                        ▼
-                         eoscam-source.dll  (carregada pelo Frame Server, LocalService)
+                         canon-eos-webcam-source.dll  (carregada pelo Frame Server, LocalService)
                          só copia o quadro; desenha as telas de aviso
                                        │
                                        ▼
-                 câmera virtual "Canon EOS Webcam (eoscam)"  →  Teams, Zoom, navegador, OBS...
+                 câmera virtual "Canon EOS Webcam"  →  Teams, Zoom, navegador, OBS...
 ```
 
-- **`eoscam-source.dll`**: fonte de mídia (IMFMediaSource) registrada em HKLM. O Frame
+- **`canon-eos-webcam-source.dll`**: fonte de mídia (IMFMediaSource) registrada em HKLM. O Frame
   Server a carrega quando um programa abre a webcam. Ela sinaliza no canal compartilhado
   que quer quadros; sem quadros, mostra uma tela explicando o que falta. Fica enxuta de
   propósito: não decodifica nada e **não carrega Maxine nem CUDA** dentro do Frame Server.
   Se a ponte for de outra versão (quadro de tamanho diferente), mostra "Versões
-  incompatíveis do eoscam: reinstale". O canal v2 (`EosCamFrames2`) não se mistura com o da v1.
-- **`eoscam.exe` / `eoscam-bg.exe`**: a ponte com a câmera e o pipeline de imagem. Liga o
+  incompatíveis do canon-eos-webcam: reinstale". O canal v2 (`CanonEosWebcamFrames2`) não se mistura com o da v1.
+- **`canon-eos-webcam.exe` / `canon-eos-webcam-bg.exe`**: a ponte com a câmera e o pipeline de imagem. Liga o
   Live View (`SetRemoteMode`, `EVFOutputDevice = PC`) quando a fonte pede quadros (ou o painel
   está aberto), busca os quadros com `GetViewFinderData` e desliga o Live View 5 s depois que
   ninguém mais usa a webcam. Se outro software derrubar o Live View, religa automaticamente.
-  O `eoscam-bg.exe` é o mesmo código sem console, com **ícone na bandeja e painel**.
+  O `canon-eos-webcam-bg.exe` é o mesmo código sem console, com **ícone na bandeja e painel**.
 - **`tools/eosprobe`**: ferramenta de medição do Live View via PTP.
 
 Formato oferecido: só NV12 1920×1080 a 30 fps, recorte 16:9 ancorado na base (descarta o topo).
@@ -84,22 +84,22 @@ temperatura (ganhos R/B), tom (verde/magenta) e saturação, aplicados por LUT.
 ## Painel de controle
 
 Ícone na bandeja (menu: **Abrir painel**, **Iniciar com o Windows**, **Sair**; duplo clique abre o
-painel) ou `eoscam panel`. Com o painel aberto a ponte liga o Live View mesmo sem programa usando a
+painel) ou `canon-eos-webcam panel`. Com o painel aberto a ponte liga o Live View mesmo sem programa usando a
 webcam, para dar para ajustar antes de uma chamada; ao fechar a janela (a ponte continua na
 bandeja) volta à regra normal. Tem prévia ao vivo, grupos de **Imagem** (duplo clique num controle
 zera), **Efeitos de IA**, **Fundo** e **Câmera**, e um rodapé com o estado da ponte, quadros/s de
 entrada e saída e o tempo de processamento por quadro. As configurações ficam em
-`%APPDATA%\EosCam\settings.ini` (seções `[image]`, `[effects]`, `[background]`, `[ui]`) e são
+`%APPDATA%\CanonEosWebcam\settings.ini` (seções `[image]`, `[effects]`, `[background]`, `[ui]`) e são
 gravadas ~0,5 s depois de cada mudança.
 
 **Idioma.** A interface (painel, menu da bandeja, telas de aviso da câmera virtual e os comandos do
 dia a dia) está em inglês e em português do Brasil. O idioma vem, nesta ordem, da variável
-`EOSCAM_LANG` (`en` ou `pt`), da chave `language` na seção `[ui]` do `settings.ini` (`auto`, `en` ou
+`CANON_EOS_WEBCAM_LANG` (`en` ou `pt`), da chave `language` na seção `[ui]` do `settings.ini` (`auto`, `en` ou
 `pt`; vale ao iniciar a ponte) e do idioma de exibição do Windows (português → `pt`, qualquer outro →
 `en`). As telas de aviso são desenhadas pela DLL dentro do Frame Server (conta LocalService), então
 seguem o idioma do sistema. Logs e saídas de diagnóstico ficam sempre em inglês.
 
-**Câmera (PTP, os valores ficam guardados pela própria câmera, não pelo eoscam).** A lista de valores
+**Câmera (PTP, os valores ficam guardados pela própria câmera, não pelo canon-eos-webcam).** A lista de valores
 vem da câmera (`GetEvent`: `PropValueChanged` e `AvailListChanged`); só aparecem habilitados os ajustes
 que o modo atual da câmera anuncia. Na T3 em modo automático: compensação de exposição, balanço de
 branco (automático, luz do dia, sombra, nublado, tungstênio, fluorescente, flash, personalizado),
@@ -121,14 +121,20 @@ cmake --build build --config Release
 ## Instalar
 
 ```powershell
-# 1. Como administrador: copia para C:\Program Files\EosCam e registra a DLL
+# 1. Como administrador: copia para C:\Program Files\CanonEosWebcam e registra a DLL
 pwsh -ExecutionPolicy Bypass -File scripts\deploy.ps1
 
 # 2. Como usuário comum:
-& "C:\Program Files\EosCam\eoscam.exe" install          # cria a câmera virtual
-& "C:\Program Files\EosCam\eoscam.exe" autostart on     # ponte em segundo plano, inicia com o Windows
-& "C:\Program Files\EosCam\eoscam.exe" panel            # abre o painel de controle
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" install          # cria a câmera virtual
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" autostart on     # ponte em segundo plano, inicia com o Windows
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" panel            # abre o painel de controle
 ```
+
+**Atualizando a partir do eoscam** (o nome antigo do projeto): o `deploy.ps1` para a ponte antiga e apaga
+`C:\Program Files\EosCam`, o `install` remove a câmera virtual antiga "Canon EOS Webcam (eoscam)", o
+`autostart on` remove a entrada antiga de inicialização, e as configurações são copiadas de
+`%APPDATA%\EosCam` na primeira execução. As variáveis de ambiente agora começam com `CANON_EOS_WEBCAM_` em
+vez de `EOSCAM_`.
 
 A câmera deve estar ligada, num modo de foto (P/Av/Tv/M, para ter mais ajustes) e com o Live View
 habilitado no menu. Se a webcam for aberta antes de qualquer programa, o canal `Global\` só passa a
@@ -137,28 +143,28 @@ existir quando a DLL é carregada pelo Frame Server; o painel funciona mesmo ass
 ## Comandos
 
 ```
-eoscam run                  ponte neste console (para ver o log ao vivo; sem bandeja nem painel)
-eoscam start | stop         ponte em segundo plano (eoscam-bg.exe, com bandeja e painel)
-eoscam panel                abre o painel (inicia o eoscam-bg se ele não estiver rodando)
-eoscam autostart on|off     iniciar a ponte em segundo plano junto com o Windows
-eoscam install | uninstall  criar/remover a câmera virtual
-eoscam status               estado do canal (quadros, produtor, consumidor)
-eoscam list                 câmeras que o Windows enxerga
-eoscam test [--seconds N] [--size LxA] [--out f.jpg] [--direct]
+canon-eos-webcam run                  ponte neste console (para ver o log ao vivo; sem bandeja nem painel)
+canon-eos-webcam start | stop         ponte em segundo plano (canon-eos-webcam-bg.exe, com bandeja e painel)
+canon-eos-webcam panel                abre o painel (inicia o canon-eos-webcam-bg se ele não estiver rodando)
+canon-eos-webcam autostart on|off     iniciar a ponte em segundo plano junto com o Windows
+canon-eos-webcam install | uninstall  criar/remover a câmera virtual
+canon-eos-webcam status               estado do canal (quadros, produtor, consumidor)
+canon-eos-webcam list                 câmeras que o Windows enxerga
+canon-eos-webcam test [--seconds N] [--size LxA] [--out f.jpg] [--direct]
                             abre a webcam como um app comum e mede quadros/s e CPU
-eoscam process in.jpg [--out f.jpg] [--bench N]
+canon-eos-webcam process in.jpg [--out f.jpg] [--bench N]
                             passa um JPEG pelo pipeline (sem câmera): testa efeitos e mede os tempos
-eoscam cam [--set PROP=VALOR]... [--out f.jpg]
+canon-eos-webcam cam [--set PROP=VALOR]... [--out f.jpg]
                             diagnóstico (com a ponte parada): lista os ajustes que a câmera anuncia,
                             escreve propriedades (hexadecimal) e salva um quadro processado de cada vez
 ```
 
-Logs: `C:\ProgramData\EosCam\eoscam.log` (ponte; a cada 60 s grava quadros/s, CPU e o tempo por
+Logs: `C:\ProgramData\CanonEosWebcam\canon-eos-webcam.log` (ponte; a cada 60 s grava quadros/s, CPU e o tempo por
 estágio) e `source.log` (fonte, dentro do Frame Server).
 
 ## Desempenho (RTX 4080, Live View da T3 a ~29 fps)
 
-Medido com `eoscam test --direct --size 1920x1080` e a câmera real; tempos por quadro em média móvel.
+Medido com `canon-eos-webcam test --direct --size 1920x1080` e a câmera real; tempos por quadro em média móvel.
 
 | Configuração | Quadros/s entregues | CPU da ponte | Por estágio (ms) |
 |---|---|---|---|
@@ -172,21 +178,21 @@ por estágio na primeira medição e fica mais lenta quando está em repouso).
 
 ## Desenvolvimento
 
-`eoscam test --direct` carrega a DLL dentro do próprio processo, sem registro nem Frame
-Server. Com `EOSCAM_LOCAL=1` no ambiente (no `run` e no `test`), o canal usa o namespace
+`canon-eos-webcam test --direct` carrega a DLL dentro do próprio processo, sem registro nem Frame
+Server. Com `CANON_EOS_WEBCAM_LOCAL=1` no ambiente (no `run` e no `test`), o canal usa o namespace
 `Local\`, então dá para testar tudo sem administrador:
 
 ```powershell
-$env:EOSCAM_LOCAL = '1'
-.\build\Release\eoscam.exe run             # em um terminal (pare antes a ponte instalada: eoscam stop)
-.\build\Release\eoscam.exe test --direct   # em outro
+$env:CANON_EOS_WEBCAM_LOCAL = '1'
+.\build\Release\canon-eos-webcam.exe run             # em um terminal (pare antes a ponte instalada: canon-eos-webcam stop)
+.\build\Release\canon-eos-webcam.exe test --direct   # em outro
 ```
 
-Variáveis de ambiente úteis: `EOSCAM_SETTINGS` (outro `settings.ini`), `EOSCAM_LOG` (log do
-eoscam-bg), `NV_VIDEO_EFFECTS_PATH` (outra pasta do runtime do Maxine; uma pasta vazia simula a
-ausência dele), `EOSCAM_FORCE_CPU_BLUR=1` (usa o desfoque de fundo da CPU), `EOSCAM_THREADS`
-(threads do pool de imagem), `EOSCAM_DUMP_EVENTS=1` (mostra no log os eventos de propriedades da
-câmera), `EOSCAM_LANG=en|pt` (idioma da interface).
+Variáveis de ambiente úteis: `CANON_EOS_WEBCAM_SETTINGS` (outro `settings.ini`), `CANON_EOS_WEBCAM_LOG` (log do
+canon-eos-webcam-bg), `NV_VIDEO_EFFECTS_PATH` (outra pasta do runtime do Maxine; uma pasta vazia simula a
+ausência dele), `CANON_EOS_WEBCAM_FORCE_CPU_BLUR=1` (usa o desfoque de fundo da CPU), `CANON_EOS_WEBCAM_THREADS`
+(threads do pool de imagem), `CANON_EOS_WEBCAM_DUMP_EVENTS=1` (mostra no log os eventos de propriedades da
+câmera), `CANON_EOS_WEBCAM_LANG=en|pt` (idioma da interface).
 
 Os textos da interface ficam em `src/common/i18n.h`, cada um com a versão em inglês e em português
 lado a lado; para acrescentar um texto, acrescente uma linha `X(Id, "English", "Português")` na lista.
@@ -197,25 +203,25 @@ Frame Server para liberar o arquivo.
 ## Desinstalar
 
 ```powershell
-& "C:\Program Files\EosCam\eoscam.exe" autostart off
-& "C:\Program Files\EosCam\eoscam.exe" stop
-& "C:\Program Files\EosCam\eoscam.exe" uninstall
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" autostart off
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" stop
+& "C:\Program Files\CanonEosWebcam\canon-eos-webcam.exe" uninstall
 pwsh -ExecutionPolicy Bypass -File scripts\deploy.ps1 -Uninstall   # como admin
 ```
 
 ## Conflito com o EOS Webcam Utility
 
 O driver do EOS Webcam Utility (UMDF, usa o EDSDK) fala com a câmera sempre que o Frame
-Server do Windows entra em atividade e derruba o Live View do eoscam. O eoscam se recupera
+Server do Windows entra em atividade e derruba o Live View do canon-eos-webcam. O canon-eos-webcam se recupera
 sozinho em menos de 1 s, mas o ideal é desativar o dispositivo "EOS Webcam Utility" no
 Gerenciador de Dispositivos ou desinstalar o EOS Webcam Utility.
 
 ## Licenças
 
-O código do eoscam é distribuído sob a licença MIT (veja `LICENSE`). `third_party/maxine` contém cabeçalhos e proxies do NVIDIA Maxine
+O código do canon-eos-webcam é distribuído sob a licença MIT (veja `LICENSE`). `third_party/maxine` contém cabeçalhos e proxies do NVIDIA Maxine
 Video Effects SDK (MIT, `third_party/maxine/LICENSE`); o runtime e os modelos do Maxine são
 instalados à parte, pelo instalador da NVIDIA, sob a licença deles.
 
-O eoscam é um projeto independente, sem nenhuma ligação com a Canon ou a NVIDIA nem endosso delas.
+O canon-eos-webcam é um projeto independente, sem nenhuma ligação com a Canon ou a NVIDIA nem endosso delas.
 Canon, EOS, NVIDIA e Maxine são marcas dos seus respectivos donos e aparecem aqui só para indicar
 compatibilidade.

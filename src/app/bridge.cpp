@@ -8,7 +8,7 @@
 
 #include "applog.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
@@ -189,7 +189,7 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
     SetThreadDescription(GetCurrentThread(), L"capture");
     proc_ = std::thread([this] { ProcessLoop(); });
 
-    Log("eoscam running. Ctrl+C to quit.");
+    Log("canon-eos-webcam running. Ctrl+C to quit.");
     Log("Waiting for Windows to register/open the virtual camera...");
 
     while (!stop_ && !(externalStop && *externalStop)) {
@@ -343,4 +343,4 @@ int Bridge::Run(HANDLE stopEvent, const std::atomic<bool>* externalStop) {
     return 0;
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

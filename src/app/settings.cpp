@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <cwchar>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 namespace {
 
@@ -67,14 +67,22 @@ void WriteInt(const wchar_t* sec, const wchar_t* key, int v, const wchar_t* path
 
 std::wstring SettingsStore::DefaultPath() {
     wchar_t env[MAX_PATH];
-    DWORD n = GetEnvironmentVariableW(L"EOSCAM_SETTINGS", env, MAX_PATH);
+    DWORD n = GetEnvironmentVariableW(L"CANON_EOS_WEBCAM_SETTINGS", env, MAX_PATH);
     if (n > 0 && n < MAX_PATH) return env;
     PWSTR appdata = nullptr;
     std::wstring dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appdata)) && appdata) dir = appdata;
     CoTaskMemFree(appdata);
     if (dir.empty()) dir = L".";
-    return dir + L"\\EosCam\\settings.ini";
+    std::wstring path = dir + L"\\CanonEosWebcam\\settings.ini";
+    // First run after the rename from eoscam: carry the old settings over (the old file is left in place).
+    std::wstring legacy = dir + L"\\EosCam\\settings.ini";
+    if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW(legacy.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        SHCreateDirectoryExW(nullptr, (dir + L"\\CanonEosWebcam").c_str(), nullptr);
+        CopyFileW(legacy.c_str(), path.c_str(), TRUE);
+    }
+    return path;
 }
 
 SettingsStore::SettingsStore() = default;
@@ -266,4 +274,4 @@ void SettingsStore::WriterLoop() {
     }
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

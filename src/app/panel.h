@@ -1,4 +1,4 @@
-// Tray icon and control panel (eoscam-bg.exe only). Native Win32 window, no dependencies.
+// Tray icon and control panel (canon-eos-webcam-bg.exe only). Native Win32 window, no dependencies.
 #pragma once
 
 #include <windows.h>
@@ -8,11 +8,11 @@
 #include "bridge.h"
 #include "settings.h"
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
-// Class of the hidden window that receives the tray clicks and the "eoscam panel" messages.
-inline constexpr wchar_t kBridgeWindowClass[] = L"EosCamBridgeWindow";
-// Message that "eoscam panel" sends to the hidden window: opens the panel (or brings it to the front).
+// Class of the hidden window that receives the tray clicks and the "canon-eos-webcam panel" messages.
+inline constexpr wchar_t kBridgeWindowClass[] = L"CanonEosWebcamBridgeWindow";
+// Message that "canon-eos-webcam panel" sends to the hidden window: opens the panel (or brings it to the front).
 inline constexpr UINT kMsgOpenPanel = WM_APP + 1;
 
 class PanelApp {
@@ -32,4 +32,4 @@ private:
     std::unique_ptr<Impl> d_;
 };
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

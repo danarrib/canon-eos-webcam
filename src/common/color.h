@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-namespace eoscam {
+namespace canon_eos_webcam {
 
 inline uint8_t Clamp8(int v) { return uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 
@@ -51,4 +51,4 @@ inline void Nv12ToBgra(const uint8_t* nv12, int w, int h, uint8_t* bgra) {
     }
 }
 
-}  // namespace eoscam
+}  // namespace canon_eos_webcam

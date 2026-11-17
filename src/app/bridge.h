@@ -61,6 +61,8 @@ public:
     // Asks the capture thread to write a property (label: name of the setting for the error message).
     void SetCameraProp(uint32_t prop, uint32_t value, Str label);
     void SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, Str label);
+    // Asks the capture thread to run an autofocus.
+    void AutoFocus();
     // Copy from the property cache (false if the camera is not connected).
     bool CameraProp(uint32_t prop, PropState& out) const;
     uint32_t CameraPropsGeneration() const { return propsGen_; }
@@ -69,10 +71,10 @@ public:
 
 private:
     struct CamCommand {
-        uint32_t prop;
+        enum class Kind { Prop, PropWords, AutoFocus } kind = Kind::Prop;
+        uint32_t prop = 0;
         std::vector<uint32_t> words;  // a simple value = one word
-        bool structured;
-        Str label;
+        Str label = Str::None;
     };
 
     void ProcessLoop();

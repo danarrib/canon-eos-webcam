@@ -92,12 +92,20 @@ bool Bridge::CameraProp(uint32_t prop, PropState& out) const { return cam_.GetPr
 
 void Bridge::SetCameraProp(uint32_t prop, uint32_t value, Str label) {
     std::lock_guard<std::mutex> lk(cmdMu_);
-    cmds_.push_back({prop, {value}, false, label});
+    cmds_.push_back({CamCommand::Kind::Prop, prop, {value}, label});
 }
 
 void Bridge::SetCameraPropWords(uint32_t prop, const std::vector<uint32_t>& words, Str label) {
     std::lock_guard<std::mutex> lk(cmdMu_);
-    cmds_.push_back({prop, words, true, label});
+    cmds_.push_back({CamCommand::Kind::PropWords, prop, words, label});
+}
+
+void Bridge::AutoFocus() {
+    std::lock_guard<std::mutex> lk(cmdMu_);
+    // repeated clicks while the camera hasn't started the previous one would only queue redundant AFs
+    for (const CamCommand& c : cmds_)
+        if (c.kind == CamCommand::Kind::AutoFocus) return;
+    cmds_.push_back({CamCommand::Kind::AutoFocus, 0, {}, Str::LabelAutoFocus});
 }
 
 std::string Bridge::CameraError(Lang lang) const {
@@ -126,7 +134,21 @@ void Bridge::RunCameraCommands() {
             SetCameraError(Msg(Str::CamErrNotConnected, {}, c.label));
             continue;
         }
-        PtpResult r = c.structured ? cam_.WritePropWords(c.prop, c.words) : cam_.WriteProp(c.prop, c.words[0]);
+        if (c.kind == CamCommand::Kind::AutoFocus) {
+            PtpResult r = cam_.AutoFocus();
+            if (!r.ok()) {
+                char b[64];
+                snprintf(b, sizeof b, "0x%04lX, hr=0x%08lX", (unsigned long)r.code, (unsigned long)r.hr);
+                Msg m(Str::CamErrAutoFocus, b);
+                SetCameraError(m);
+                Log("camera: %s", Text(m, Lang::En).c_str());
+            } else {
+                Log("camera: autofocus requested");
+            }
+            continue;
+        }
+        PtpResult r = c.kind == CamCommand::Kind::PropWords ? cam_.WritePropWords(c.prop, c.words)
+                                                             : cam_.WriteProp(c.prop, c.words[0]);
         if (!r.ok()) {
             char b[64];
             snprintf(b, sizeof b, "0x%04lX, hr=0x%08lX", (unsigned long)r.code, (unsigned long)r.hr);

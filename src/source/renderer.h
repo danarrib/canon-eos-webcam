@@ -17,6 +17,8 @@ public:
     HRESULT Init(UINT width, UINT height);
     // Draws a warning screen (only redraws if the text changed since the last call).
     void RenderMessage(const std::wstring& title, const std::wstring& detail);
+    // Fills the frame with black (NV12 Y=16, U=V=128); like RenderMessage, only does the work once.
+    void RenderBlack();
     // Call after writing a real frame into Nv12Data(): the next warning screen will be redrawn.
     void InvalidateMessage() { lastMessage_.clear(); }
 

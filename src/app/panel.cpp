@@ -38,7 +38,7 @@ enum Id : int {
     ID_FX_SR = 120, ID_FX_AR, ID_FX_DN,
     ID_BG_ENABLE = 130, ID_BG_MODE, ID_BG_COLOR, ID_BG_BLUR, ID_BG_IMAGE, ID_BG_NOTE,
     ID_CAM_EXP = 150, ID_CAM_ISO, ID_CAM_WB, ID_CAM_KELVIN, ID_CAM_STYLE, ID_CAM_CONTRAST, ID_CAM_SHARP,
-    ID_CAM_SAT, ID_CAM_TONE, ID_CAM_ALO, ID_CAM_INFO,
+    ID_CAM_SAT, ID_CAM_TONE, ID_CAM_ALO, ID_CAM_AF, ID_CAM_INFO,
     ID_STATUS = 190, ID_ZOOM = 195, ID_ZOOM_HINT = 196,
     ID_VALUE_BASE = 300,  // value label of a slider: ID_VALUE_BASE + id
     ID_LABEL_BASE = 500,  // text label of a control: ID_LABEL_BASE + id
@@ -315,7 +315,7 @@ struct PanelApp::Impl {
              ID_IMG_RESET);
 
         int cy = 12 + 20 + 6 * rowH + 38 + 8;
-        Group(TrW(Str::GroupCamera), rx, cy, rw, 20 + 10 * rowH + 6 + 40);
+        Group(TrW(Str::GroupCamera), rx, cy, rw, 20 + 10 * rowH + 6 + 40 + 32);
         int y = cy + 20;
         Make(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, rx + 12, y + 1, rw - 24, 18, ID_CAM_INFO);
         y += 22;
@@ -345,7 +345,9 @@ struct PanelApp::Impl {
         }
         Label(ID_CAM_ALO, TrW(Str::CamAlo), rx + 12, y, 170);
         Combo(ID_CAM_ALO, rx + 186, y, 160);
-        y += rowH + 2;
+        y += rowH + 4;
+        Make(L"BUTTON", TrW(Str::CamAutoFocus), BS_PUSHBUTTON | WS_TABSTOP, rx + 12, y, 150, 26, ID_CAM_AF);
+        y += 26 + 4;
         Make(L"STATIC", L"", SS_LEFT | SS_NOPREFIX, rx + 12, y, rw - 24, 34, ID_CAM_INFO + 1);
 
         // ---- footer
@@ -660,6 +662,7 @@ struct PanelApp::Impl {
             SendMessageW(Child(ID_CAM_ALO), CB_RESETCONTENT, 0, 0);
         }
         EnableCtl(ID_CAM_ALO, has);
+        EnableCtl(ID_CAM_AF, conn);
         updating = false;
     }
 
@@ -995,6 +998,7 @@ struct PanelApp::Impl {
                     else if (id == ID_BG_ENABLE) OnBackground(id);
                     else if (id == ID_BG_COLOR) PickColor();
                     else if (id == ID_BG_IMAGE) PickImage();
+                    else if (id == ID_CAM_AF) bridge.AutoFocus();
                 }
                 return 0;
             }

@@ -73,6 +73,14 @@ HRESULT CreateNv12Type(UINT w, UINT h, IMFMediaType** out) {
     return S_OK;
 }
 
+// While the bridge is alive and working, a pause in the live frames repeats the last one for up to this long
+// (the camera drops Live View by itself every ~30 min and the bridge restores it in ~2 s).
+constexpr uint64_t kHoldLimitMs = 8000;
+// At startup (no live frame yet in this stream) a black frame is shown for up to this long, from the stream start.
+constexpr uint64_t kStartupLimitMs = 10000;
+// A bridge that isn't heard yet is given this long, from the stream start, before "not running" is shown.
+constexpr uint64_t kBridgeGraceMs = 2000;
+
 constexpr HRESULT kKsNotFound = HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
 
 // Text of the warning screen shown while there is no live image.
@@ -346,6 +354,10 @@ private:
         uint64_t statsTick = NowTick(), statDelivered = 0, statLive = 0, statIncompat = 0, statReadFail = 0;
         double statCopyMs = 0;
         bool incompatible = false;
+        // everLive: a live frame arrived in this stream (never reset); haveLive: one arrived since the last warning screen.
+        bool everLive = false, holdLogged = false, holdExpired = false, startupLogged = false;
+        uint64_t holdSince = 0;
+        const uint64_t streamStart = NowTick();
         std::wstring title, detail;
         LARGE_INTEGER qpf;
         QueryPerformanceFrequency(&qpf);
@@ -382,11 +394,12 @@ private:
             }
 
             bool live = false;
+            ReadResult rr = ReadResult::None;
             if (latest != shownFrame) {
                 FrameMeta meta;
                 LARGE_INTEGER a, b;
                 QueryPerformanceCounter(&a);
-                ReadResult rr = chan.ReadLatest(renderer.Nv12Data(), renderer.Nv12Bytes(), w, h, meta);
+                rr = chan.ReadLatest(renderer.Nv12Data(), renderer.Nv12Bytes(), w, h, meta);
                 QueryPerformanceCounter(&b);
                 switch (rr) {
                     case ReadResult::Ok:
@@ -412,15 +425,62 @@ private:
                         break;
                 }
             }
-            if (!live && (!haveLive || NowTick() - lastLiveTick > 1500)) {
-                haveLive = false;
-                if (incompatible) {
-                    title = TrW(Str::SrcIncompatibleTitle);
-                    detail = TrW(Str::SrcIncompatibleDetail);
+            if (rr == ReadResult::Torn) continue;  // the buffer may be half-written: don't deliver it, retry
+            if (live) {
+                if (holdLogged)
+                    Log("stream: live image again after %llu ms of hold", (unsigned long long)(NowTick() - holdSince));
+                holdLogged = holdExpired = false;
+                everLive = true;
+            } else {
+                uint64_t t = NowTick();
+                bool alive = chan.IsOpen() && chan.ProducerAlive();
+                bool working = alive && chan.Producer() != ProducerState::NoCamera;
+                if (everLive) {
+                    // Short pause after live frames (e.g. the camera dropped Live View and the bridge is restoring
+                    // it): keep the last frame, which is still intact in the renderer's buffer.
+                    uint64_t gap = t - lastLiveTick;
+                    if (!incompatible && working && gap < kHoldLimitMs) {
+                        if (gap > 1000 && !holdLogged) {
+                            holdLogged = true;
+                            holdSince = lastLiveTick;
+                            Log("stream: no live frames, holding the last one");
+                        }
+                    } else {
+                        if (holdLogged && !holdExpired && working && !incompatible) {
+                            holdExpired = true;
+                            Log("stream: hold limit (%llu ms) expired, showing the warning screen",
+                                (unsigned long long)kHoldLimitMs);
+                        }
+                        haveLive = false;
+                        if (incompatible) {
+                            title = TrW(Str::SrcIncompatibleTitle);
+                            detail = TrW(Str::SrcIncompatibleDetail);
+                        } else {
+                            DescribeState(chan, title, detail);
+                        }
+                        renderer.RenderMessage(title, detail);
+                    }
                 } else {
-                    DescribeState(chan, title, detail);
+                    // Startup: the bridge takes a few seconds to connect and turn Live View on. Show black meanwhile.
+                    uint64_t elapsed = t - streamStart;
+                    bool grace = !chan.IsOpen() || working || (!alive && elapsed < kBridgeGraceMs);
+                    if (!incompatible && grace && elapsed < kStartupLimitMs) {
+                        renderer.RenderBlack();
+                    } else {
+                        if (!startupLogged) {
+                            startupLogged = true;
+                            Log("stream: no live image after %llu ms, showing the warning screen",
+                                (unsigned long long)elapsed);
+                        }
+                        if (incompatible) {
+                            title = TrW(Str::SrcIncompatibleTitle);
+                            detail = TrW(Str::SrcIncompatibleDetail);
+                        } else {
+                            DescribeState(chan, title, detail);
+                        }
+                        renderer.RenderMessage(title, detail);
+                    }
                 }
-                renderer.RenderMessage(title, detail);
             }
 
             ComPtr<IUnknown> token;

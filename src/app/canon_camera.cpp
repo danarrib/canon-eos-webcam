@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstdio>
 
+#include "applog.h"
+
 using Microsoft::WRL::ComPtr;
 
 namespace canon_eos_webcam {
@@ -21,8 +23,31 @@ enum : uint16_t {
     PTP_OC_CANON_EOS_SetRemoteMode = 0x9114,
     PTP_OC_CANON_EOS_SetEventMode = 0x9115,
     PTP_OC_CANON_EOS_GetEvent = 0x9116,
+    PTP_OC_CANON_EOS_KeepDeviceOn = 0x911D,
     PTP_OC_CANON_EOS_GetViewFinderData = 0x9153,
+    PTP_OC_CANON_EOS_DoAf = 0x9154,
 };
+// While the camera focuses, the Live View may stall; the watchdog leaves it alone for this long.
+constexpr uint64_t kAutoFocusGraceMs = 5000;
+// The camera drops Live View 30 min after the last "user activity"; KeepDeviceOn counts as activity.
+constexpr uint64_t kKeepAliveMs = 30000;
+// The camera also ends each Live View session after 30 min. Switching the Live View output away from the
+// PC and back is tried as a way to restart that timer without lowering the mirror. Defaults below; for
+// experiments: CANON_EOS_WEBCAM_EVF_REFRESH_S (interval in seconds, 0 = off), CANON_EOS_WEBCAM_EVF_ALT (the
+// temporary EVFOutputDevice value).
+constexpr uint32_t kEvfRefreshDefaultS = 300;
+constexpr uint32_t kEvfAltDefault = 1;  // camera screen only: the PC output really goes away for an instant
+// After a switch the frames may stall briefly; the watchdog leaves the Live View alone for this long.
+constexpr uint64_t kEvfRefreshGraceMs = 3000;
+
+uint32_t EnvU32(const wchar_t* name, uint32_t def) {
+    wchar_t v[32];
+    DWORD n = GetEnvironmentVariableW(name, v, 32);
+    if (n == 0 || n >= 32) return def;
+    wchar_t* end = nullptr;
+    unsigned long x = wcstoul(v, &end, 0);
+    return end && end != v ? uint32_t(x) : def;
+}
 enum : uint32_t {
     PTP_DPC_CANON_EOS_EVFOutputDevice = 0xD1B0,
     PTP_DPC_CANON_EOS_EVFMode = 0xD1B3,
@@ -296,6 +321,28 @@ PtpResult CanonCamera::WriteProp(uint32_t prop, uint32_t value) {
     return r;
 }
 
+void CanonCamera::RefreshEvfOutput(uint64_t now) {
+    lastEvfRefreshTick_ = now;
+    evfGraceUntil_ = now + kEvfRefreshGraceMs;
+    uint64_t t0 = GetTickCount64();
+    PtpResult a = SetPropEx(PTP_DPC_CANON_EOS_EVFOutputDevice, evfAlt_);
+    PtpResult b = SetPropEx(PTP_DPC_CANON_EOS_EVFOutputDevice, 2);
+    uint64_t ms = GetTickCount64() - t0;
+    if (!evfRefreshLogged_ || !a.ok() || !b.ok()) {  // logs the first switch and every failure
+        evfRefreshLogged_ = true;
+        Log("camera: Live View output switched to %u and back to the PC every %llu s (responses 0x%04lX, "
+            "0x%04lX; %llu ms)",
+            evfAlt_, (unsigned long long)(evfRefreshMs_ / 1000), (unsigned long)a.code, (unsigned long)b.code,
+            (unsigned long long)ms);
+    }
+}
+
+PtpResult CanonCamera::AutoFocus() {
+    PtpResult r = dev_.Exec(PTP_OC_CANON_EOS_DoAf);
+    if (r.ok()) afGraceUntil_ = GetTickCount64() + kAutoFocusGraceMs;
+    return r;
+}
+
 PtpResult CanonCamera::WritePropWords(uint32_t prop, const std::vector<uint32_t>& words) {
     std::vector<BYTE> d(8 + words.size() * 4);
     auto put = [&](size_t i, uint32_t v) {
@@ -411,6 +458,12 @@ bool CanonCamera::Connect(std::string& error) {
     consecutiveErrors_ = 0;
     recoveriesSinceOk_ = 0;
     lastEventTick_ = lastOkTick_ = lastRecoveryTick_ = connectTick_ = GetTickCount64();
+    lastKeepAliveTick_ = 0;  // the first one goes out right away (and its answer is logged)
+    keepAliveCode_ = ~0u;
+    evfRefreshMs_ = uint64_t(EnvU32(L"CANON_EOS_WEBCAM_EVF_REFRESH_S", kEvfRefreshDefaultS)) * 1000;
+    evfAlt_ = EnvU32(L"CANON_EOS_WEBCAM_EVF_ALT", kEvfAltDefault);
+    lastEvfRefreshTick_ = connectTick_;
+    evfRefreshLogged_ = false;
     return true;
 }
 
@@ -450,17 +503,31 @@ CanonCamera::Frame CanonCamera::GetFrame(std::vector<uint8_t>& jpeg) {
     if (now - lastEventTick_ > eventIntervalMs_) {  // drains the camera event queue
         PollEvents();
     }
+    if (now - lastKeepAliveTick_ >= kKeepAliveMs) {  // resets the camera's 30-minute Live View timer
+        lastKeepAliveTick_ = now;
+        auto k = dev_.Exec(PTP_OC_CANON_EOS_KeepDeviceOn);
+        DWORD code = SUCCEEDED(k.hr) ? k.code : 0;
+        if (code != keepAliveCode_) {  // logs the first answer and every change
+            keepAliveCode_ = code;
+            Log("camera: KeepDeviceOn every %llu s, response 0x%04lX (hr=0x%08lX)",
+                (unsigned long long)(kKeepAliveMs / 1000), (unsigned long)code, (unsigned long)k.hr);
+        }
+    }
+    if (evfRefreshMs_ && now - lastEvfRefreshTick_ >= evfRefreshMs_) RefreshEvfOutput(now);
 
     // No frames for too long: someone turned Live View off (e.g. the EOS Webcam Utility driver when the
     // Windows Frame Server starts). Turn it back on; after 3 attempts in a row without success, give up so
     // the caller reconnects from scratch.
-    // (the first frame takes ~1.2 s after Live View is turned on, hence the initial grace period)
-    if (now - connectTick_ > 2500 && now - lastOkTick_ > 800 && now - lastRecoveryTick_ > 1000) {
+    // (the first frame takes ~1.2 s after Live View is turned on, hence the initial grace period; an
+    // autofocus in progress may also hold the frames back for a while)
+    if (now - connectTick_ > 2500 && now - lastOkTick_ > 800 && now - lastRecoveryTick_ > 1000 &&
+        now >= afGraceUntil_ && now >= evfGraceUntil_) {
         if (recoveriesSinceOk_ >= 3) return Frame::Error;
         lastRecoveryTick_ = now;
         recoveries_++;
         recoveriesSinceOk_++;
         EnableLiveView();
+        lastEvfRefreshTick_ = now;  // a new Live View session: its timer starts over anyway
     }
 
     auto r = dev_.Read(PTP_OC_CANON_EOS_GetViewFinderData, {0x00100000, 0, 0});

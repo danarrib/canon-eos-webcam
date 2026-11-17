@@ -14,6 +14,14 @@ HRESULT FrameRenderer::Init(UINT width, UINT height) {
     return S_OK;
 }
 
+void FrameRenderer::RenderBlack() {
+    static const std::wstring kBlackKey = L"\x01";  // can't collide with a message key (title + "\n" + detail)
+    if (lastMessage_ == kBlackKey || !w_ || !h_) return;
+    lastMessage_ = kBlackKey;
+    std::fill(nv12_.begin(), nv12_.begin() + size_t(w_) * h_, uint8_t(16));
+    std::fill(nv12_.begin() + size_t(w_) * h_, nv12_.end(), uint8_t(128));
+}
+
 void FrameRenderer::RenderMessage(const std::wstring& title, const std::wstring& detail) {
     std::wstring key = title + L"\n" + detail;
     if (key == lastMessage_ || !w_ || !h_) return;  // already rendered

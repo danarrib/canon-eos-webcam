@@ -563,8 +563,10 @@ int wmain(int argc, wchar_t** argv) {
             {PTP_OC_CANON_EOS_SetEventMode, "SetEventMode"},
             {PTP_OC_CANON_EOS_SetDevicePropValueEx, "SetDevicePropValueEx"},
             {PTP_OC_CANON_EOS_GetViewFinderData, "GetViewFinderData"},
+            {0x911D, "KeepDeviceOn"},
+            {0x9154, "DoAf"},
         };
-        for (auto& n : need) printf("  0x%04X %-22s %s\n", n.op, n.name, di.has(n.op) ? "sim" : "NÃO");
+        for (auto& n : need) printf("  0x%04X %-22s %s\n", n.op, n.name, di.has(n.op) ? "yes" : "NO");
     }
 
     // 3. Start Live View to the PC

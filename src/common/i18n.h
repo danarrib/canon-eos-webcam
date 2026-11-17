@@ -99,6 +99,7 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(CamPsSaturation, "  Saturation", "  Saturação") \
     X(CamPsColorTone, "  Color tone", "  Tom de cor") \
     X(CamAlo, "Auto Lighting Optimizer", "Auto Lighting Optimizer") \
+    X(CamAutoFocus, "Autofocus", "Foco automático") \
     X(CamDisconnected, "Camera disconnected or turned off: settings unavailable.", \
                        "Câmera desconectada ou desligada: ajustes indisponíveis.") \
     X(CamModeHint, " (only the settings the current mode allows)", " (só os ajustes que o modo atual permite)") \
@@ -112,10 +113,13 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(LabelPictureStyle, "Picture Style", "Picture Style") \
     X(LabelPsParam, "Picture Style parameter", "parâmetro do Picture Style") \
     X(LabelAlo, "Auto Lighting Optimizer", "Auto Lighting Optimizer") \
+    X(LabelAutoFocus, "autofocus", "foco automático") \
     X(CamErrNotConnected, "The camera is not connected: couldn't set the {sub}.", \
                           "A câmera não está conectada: não deu para ajustar {sub}.") \
     X(CamErrRefused, "The camera refused the setting ({sub}): response {arg}. Automatic mode?", \
                      "A câmera recusou o ajuste ({sub}): resposta {arg}. Modo automático?") \
+    X(CamErrAutoFocus, "The camera couldn't autofocus: response {arg}. Is the lens switch on AF?", \
+                       "A câmera não conseguiu focar: resposta {arg}. A chave da lente está em AF?") \
     /* white balance (Canon names) */ \
     X(WbAuto, "Auto", "Automático") \
     X(WbDaylight, "Daylight", "Luz do dia") \

@@ -13,7 +13,7 @@ Windows 11 (`MFCreateVirtualCamera`). A versão 2 processa a imagem na GPU com o
 | Quadros/s | — | ~28 (o Live View da T3 entrega ~29) |
 | CPU da ponte, sem efeitos de IA | alta | ~19% de um núcleo |
 | Efeitos | — | Super Resolution, redução de artefatos, redução de ruído, remoção/troca de fundo, ajustes de imagem |
-| Ajustes da câmera | — | exposição, ISO, balanço de branco, Picture Style, ALO (pelo painel, via PTP) |
+| Ajustes da câmera | — | exposição, ISO, balanço de branco, Picture Style, ALO, foco automático (pelo painel, via PTP) |
 | Live View | sempre ligado | liga só quando algum programa usa a webcam (ou o painel está aberto) |
 
 ## Como funciona
@@ -97,7 +97,9 @@ dia a dia) está em inglês e em português do Brasil. O idioma vem, nesta ordem
 `CANON_EOS_WEBCAM_LANG` (`en` ou `pt`), da chave `language` na seção `[ui]` do `settings.ini` (`auto`, `en` ou
 `pt`; vale ao iniciar a ponte) e do idioma de exibição do Windows (português → `pt`, qualquer outro →
 `en`). As telas de aviso são desenhadas pela DLL dentro do Frame Server (conta LocalService), então
-seguem o idioma do sistema. Logs e saídas de diagnóstico ficam sempre em inglês.
+seguem o idioma do sistema. Enquanto a ponte ainda está iniciando, a câmera virtual mostra um quadro preto
+(até 10 s) e, durante uma pausa curta na imagem ao vivo (por exemplo quando a câmera derruba o Live View
+sozinha e a ponte o restaura), mantém o último quadro (até 8 s) em vez de piscar um aviso. Logs e saídas de diagnóstico ficam sempre em inglês.
 
 **Câmera (PTP, os valores ficam guardados pela própria câmera, não pelo canon-eos-webcam).** A lista de valores
 vem da câmera (`GetEvent`: `PropValueChanged` e `AvailListChanged`); só aparecem habilitados os ajustes
@@ -108,6 +110,9 @@ aparece nos modos P/Tv/Av/M, e o Auto Lighting Optimizer pode ser recusado confo
 recusou"). A temperatura de cor em Kelvin só é oferecida se a câmera listar o modo de temperatura de
 cor (a T3 não lista). Os parâmetros do Picture Style não têm tratamento no libgphoto2: a estrutura
 (`0xD150`…`0xD155`, estilos do usuário em `0xD160`…) foi decifrada lendo e escrevendo na própria câmera.
+O botão **Foco automático** envia `DoAf` (`0x9154`), o equivalente a apertar o disparador até a metade:
+a chave da lente precisa estar em AF, e a câmera foca com o modo de AF do Live View (no "Modo rápido" o
+espelho desce durante o foco; o "Modo ao vivo" mantém a imagem).
 
 ## Compilar
 
@@ -192,7 +197,16 @@ Variáveis de ambiente úteis: `CANON_EOS_WEBCAM_SETTINGS` (outro `settings.ini`
 canon-eos-webcam-bg), `NV_VIDEO_EFFECTS_PATH` (outra pasta do runtime do Maxine; uma pasta vazia simula a
 ausência dele), `CANON_EOS_WEBCAM_FORCE_CPU_BLUR=1` (usa o desfoque de fundo da CPU), `CANON_EOS_WEBCAM_THREADS`
 (threads do pool de imagem), `CANON_EOS_WEBCAM_DUMP_EVENTS=1` (mostra no log os eventos de propriedades da
-câmera), `CANON_EOS_WEBCAM_LANG=en|pt` (idioma da interface).
+câmera), `CANON_EOS_WEBCAM_LANG=en|pt` (idioma da interface), `CANON_EOS_WEBCAM_EVF_REFRESH_S` /
+`CANON_EOS_WEBCAM_EVF_ALT` (intervalo em segundos e valor temporário da troca de saída do Live View descrita abaixo;
+`0` desliga a troca).
+
+**O limite de 30 minutos do Live View.** A câmera encerra cada sessão de Live View 30 min depois de
+iniciada, o que baixa e levanta o espelho e pausa a imagem por ~2 s enquanto a ponte religa o Live View. A cada 5 min a ponte
+troca a saída do Live View para a tela da câmera e de volta para o PC (`EVFOutputDevice` 1 → 2, ~80 ms,
+sem pausa visível), o que reinicia esse contador; testado na T3 por 33 min sem queda. Ela também envia
+`KeepDeviceOn` (`0x911D`) a cada 30 s (a câmera aceita); o teste foi feito com os dois, então ainda não se
+sabe se um deles sozinho basta.
 
 Os textos da interface ficam em `src/common/i18n.h`, cada um com a versão em inglês e em português
 lado a lado; para acrescentar um texto, acrescente uma linha `X(Id, "English", "Português")` na lista.

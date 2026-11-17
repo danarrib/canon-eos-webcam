@@ -99,10 +99,15 @@ public:
     PtpResult WriteProp(uint32_t prop, uint32_t value);
     // Writes a structured property (list of 32-bit words).
     PtpResult WritePropWords(uint32_t prop, const std::vector<uint32_t>& words);
+    // Starts an autofocus (DoAf), like a half-press of the shutter button. In Live View the camera uses
+    // its Live View AF mode; "Quick mode" lowers the mirror while focusing.
+    PtpResult AutoFocus();
 
 private:
     PtpResult SetPropEx(uint32_t prop, uint32_t value);
     bool EnableLiveView();
+    // Switches the Live View output away from the PC and back (tries to restart the 30-min session timer).
+    void RefreshEvfOutput(uint64_t now);
     void ParseEvents(const std::vector<BYTE>& d);
 
     PtpDevice dev_;
@@ -116,6 +121,12 @@ private:
     uint64_t lastOkTick_ = 0;
     uint64_t lastRecoveryTick_ = 0;
     uint64_t connectTick_ = 0;
+    uint64_t afGraceUntil_ = 0;
+    uint64_t lastKeepAliveTick_ = 0;
+    DWORD keepAliveCode_ = ~0u;  // last KeepDeviceOn response (only changes are logged)
+    uint64_t evfRefreshMs_ = 0, lastEvfRefreshTick_ = 0, evfGraceUntil_ = 0;
+    uint32_t evfAlt_ = 1;
+    bool evfRefreshLogged_ = false;
     int recoveries_ = 0;
     int recoveriesSinceOk_ = 0;
 

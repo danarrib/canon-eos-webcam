@@ -13,7 +13,7 @@ control panel with a tray icon.
 | Frames/s | — | ~28 (the T3 Live View delivers ~29) |
 | Bridge CPU, without AI effects | high | ~19% of a core |
 | Effects | — | Super Resolution, artifact reduction, noise reduction, background removal/replacement, image adjustments |
-| Camera settings | — | exposure, ISO, white balance, Picture Style, ALO (from the panel, over PTP) |
+| Camera settings | — | exposure, ISO, white balance, Picture Style, ALO, autofocus (from the panel, over PTP) |
 | Live View | always on | on only while some program uses the webcam (or the panel is open) |
 
 ## How it works
@@ -96,7 +96,10 @@ everyday commands) is available in English and Brazilian Portuguese. The languag
 from the `CANON_EOS_WEBCAM_LANG` variable (`en` or `pt`), from the `language` key in the `[ui]` section of
 `settings.ini` (`auto`, `en` or `pt`; read when the bridge starts) and from the Windows display language
 (Portuguese → `pt`, anything else → `en`). The warning screens are drawn by the DLL inside the Frame
-Server (LocalService account), so they follow the system language. Logs and diagnostic output are
+Server (LocalService account), so they follow the system language. While the bridge is still starting the
+virtual camera shows a black frame (up to 10 s), and during a short pause in the live image (for example when
+the camera drops Live View by itself and the bridge restores it) it keeps the last frame (up to 8 s)
+instead of flashing a warning. Logs and diagnostic output are
 always in English.
 
 **Camera (PTP; the values are stored by the camera itself, not by canon-eos-webcam).** The list of values comes
@@ -108,6 +111,9 @@ Auto Lighting Optimizer may be refused depending on the mode ("the camera refuse
 temperature in Kelvin is only offered if the camera lists the color temperature mode (the T3 doesn't).
 The Picture Style parameters are not handled by libgphoto2: the structure (`0xD150`…`0xD155`, user
 styles at `0xD160`…) was worked out by reading and writing on the camera itself.
+The **Autofocus** button sends `DoAf` (`0x9154`), the equivalent of half-pressing the shutter button:
+the lens switch must be on AF, and the camera focuses with its Live View AF mode (in "Quick mode" the
+mirror drops while focusing; "Live mode" keeps the image going).
 
 ## Building
 
@@ -192,7 +198,16 @@ Useful environment variables: `CANON_EOS_WEBCAM_SETTINGS` (another `settings.ini
 `NV_VIDEO_EFFECTS_PATH` (another Maxine runtime folder; an empty folder simulates its absence),
 `CANON_EOS_WEBCAM_FORCE_CPU_BLUR=1` (uses the CPU background blur), `CANON_EOS_WEBCAM_THREADS` (image pool threads),
 `CANON_EOS_WEBCAM_DUMP_EVENTS=1` (logs the camera property events), `CANON_EOS_WEBCAM_LANG=en|pt` (user-interface
-language).
+language), `CANON_EOS_WEBCAM_EVF_REFRESH_S` / `CANON_EOS_WEBCAM_EVF_ALT` (interval in seconds and temporary value of the
+Live View output switch described below; `0` turns the switch off).
+
+**The 30-minute Live View limit.** The camera ends each Live View session 30 min after it starts, which
+lowers and raises the mirror and pauses
+the image for ~2 s while the bridge turns Live View back on. Every 5 min the bridge switches the Live View
+output to the camera screen and back to the PC (`EVFOutputDevice` 1 → 2, ~80 ms, no visible pause), which
+restarts that timer; tested on the T3 for 33 min without a drop. It also sends `KeepDeviceOn` (`0x911D`)
+every 30 s (the camera accepts it); the test ran with both, so it is not yet known whether either one alone
+is enough.
 
 The user-interface strings live in `src/common/i18n.h`, each with its English and Portuguese versions
 side by side; to add a string, add an `X(Id, "English", "Português")` line to the list.

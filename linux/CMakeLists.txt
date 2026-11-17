@@ -21,6 +21,7 @@ add_executable(canon-eos-webcam
   src/service/main.cpp
   src/service/log.cpp
   src/common/ini.cpp
+  src/common/jpeg.cpp
   src/service/ptp_usb.cpp
   src/service/settings.cpp
   src/service/pipeline.cpp
@@ -33,5 +34,17 @@ add_executable(canon-eos-webcam
 target_link_libraries(canon-eos-webcam PRIVATE PkgConfig::LIBUSB PkgConfig::TURBOJPEG PkgConfig::PIPEWIRE Threads::Threads)
 target_include_directories(canon-eos-webcam PRIVATE src)
 
+# Panel: GTK4 + TurboJPEG (preview decoding); talks to the service over the control socket only.
+pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
+add_executable(canon-eos-webcam-panel
+  src/panel/main.cpp
+  src/panel/client.cpp
+  src/common/ini.cpp
+  src/common/jpeg.cpp
+  src/common/camera_values.cpp
+)
+target_link_libraries(canon-eos-webcam-panel PRIVATE PkgConfig::GTK4 PkgConfig::TURBOJPEG)
+target_include_directories(canon-eos-webcam-panel PRIVATE src)
+
 include(GNUInstallDirs)
-install(TARGETS canon-eos-webcam RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS canon-eos-webcam canon-eos-webcam-panel RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

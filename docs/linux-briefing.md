@@ -89,7 +89,9 @@ Without a consumer, the process sits idle, with CPU ≈ 0.
 
 While the camera is not available (off, disconnected or the first frame hasn't arrived yet), send a placeholder
 frame, for example plain dark gray. This way Chrome doesn't show a "frozen" black screen and the camera doesn't
-vanish from the list.
+vanish from the list. During a **short pause** with the camera still connected (e.g. Live View being turned
+back on), repeat the last frame for up to 8 s instead of switching to the placeholder (see "Update: changes made
+on Windows").
 
 ## Protocol: PTP over USB (libusb)
 
@@ -141,7 +143,9 @@ Codes:
 | `SetEventMode` (Canon) | `0x9115` (parameter: 1 on, 0 off) |
 | `GetEvent` (Canon) | `0x9116` (no parameters; data from the camera) |
 | `GetViewFinderData` (Canon) | `0x9153` (parameters: `0x00100000, 0, 0`; data from the camera) |
-| `EVFOutputDevice` property | `0xD1B0` (2 = PC, 0 = off) |
+| `KeepDeviceOn` (Canon) | `0x911D` (no parameters; see "Update: changes made on Windows") |
+| `DoAf` (Canon) | `0x9154` (no parameters; autofocus, like a half-press of the shutter button) |
+| `EVFOutputDevice` property | `0xD1B0` (2 = PC, 1 = camera screen only, 0 = off) |
 | `EVFMode` property | `0xD1B3` (1) |
 | OK response | `0x2001` |
 | `SessionAlreadyOpen` response | `0x201E` (treat as success) |
@@ -181,7 +185,9 @@ Also turn off on SIGTERM/SIGINT, so the camera isn't left stuck in remote mode.
   nothing needs to be parsed.
 - **Recovery:** starting 2.5 s after connecting (the first frame takes ~1.2 s), if more than 800 ms pass without
   a good frame, run the "turn Live View on" sequence again (at most once a second). After 3 restarts without any
-  good frame, disconnect and reconnect from scratch.
+  good frame, disconnect and reconnect from scratch. Turning Live View back on lowers and raises the mirror
+  (audible) and pauses the image for ~2 s, so avoid it when possible: see the 30-minute limit in
+  "Update: changes made on Windows".
 
 The T3 Live View frame is a **1056×704** JPEG at ~30 fps.
 
@@ -440,6 +446,91 @@ panel and look. Never simulate clicks or keys.
    is compiled against the kernel) and recovers from a PipeWire restart (`systemctl --user restart pipewire`).
 10. **README** in `linux/README.md` (and `linux/README.pt-BR.md`): installation, Chrome flag, panel,
     configuration, how to diagnose (`probe`, `cam`, journal) and how to remove it.
+
+## Update: changes made on Windows (2026-11-17), to bring to `linux/`
+
+The first Linux version (`linux/`) was written before these three changes. On Windows they are in commit
+`8f10c38` ("Keep Live View past 30 minutes, add autofocus, smooth over short pauses"); read its diff
+(`git show 8f10c38 -- src/`) as the reference. On Linux the camera code is `linux/src/service/canon_camera.*`, the
+capture thread and its command queue are in `linux/src/service/bridge.*`, the output is
+`linux/src/service/pw_output.cpp`, and the panel is `linux/src/panel/main.cpp`.
+
+### 1. The 30-minute Live View limit
+
+**Problem.** The camera ends each Live View session **exactly 30:00 after it starts**: `GetViewFinderData` starts
+answering `0xA102`, the recovery turns Live View back on, the mirror drops and rises (audible) and the image
+pauses for ~2 s. It repeats every 30 min, because the timer starts over with each new session. Canon's own EOS
+Webcam Utility has the same problem in recent versions, and an older version didn't. **The user does not want to
+change any camera setting** (e.g. auto power off) to work around it: the fix has to be in our code.
+
+**Solution (tested on the T3 on Windows: 33 min with a consumer, no drop, 29.6 distinct frames/s):** two things,
+both in the capture loop (`GetFrame`), on the capture thread:
+
+- **`KeepDeviceOn` (`0x911D`, no parameters) every 30 s**, the first one right after connecting. The camera answers
+  `0x2001`. Log the first answer and every change of the answer (not every call).
+- **Switch the Live View output away from the PC and back every 300 s:** `SetDevicePropValueEx(EVFOutputDevice =
+  1)` immediately followed by `SetDevicePropValueEx(EVFOutputDevice = 2)`. It takes ~80 ms, the camera accepts both
+  (`0x2001`) and the image doesn't pause. This restarts the camera's 30-minute timer. Details:
+  - start counting from the connection, and **restart the count whenever the recovery turns Live View back on**
+    (it is a new session anyway);
+  - after each switch, keep the recovery from firing for **3 s** (frames may stall briefly);
+  - log the first switch (both responses and the time it took) and any failure;
+  - configurable for experiments, with the same names as on Windows: `CANON_EOS_WEBCAM_EVF_REFRESH_S` (interval
+    in seconds, default 300, `0` turns the switch off) and `CANON_EOS_WEBCAM_EVF_ALT` (the temporary value, default
+    1). Value 3 (PC + camera screen) was also accepted, but 1 is the default because the PC output really goes
+    away for an instant; the camera reports its current output as `0x80000003`, so switching to 3 may be a no-op.
+
+It is **not known which of the two is necessary**: they were only tested together. `KeepDeviceOn` alone was never
+really tested (the attempt ran an old binary by mistake). If you want to find out, run a 31-minute test with
+`CANON_EOS_WEBCAM_EVF_REFRESH_S=0`; if it doesn't drop, `KeepDeviceOn` is enough and the switch can go. Otherwise,
+keep both.
+
+**Acceptance:** a consumer (e.g. `gst-launch-1.0 pipewiresrc target-object=canon-eos-webcam ! fakesink`) for
+**≥ 33 min**: the journal shows the `KeepDeviceOn` and switch lines and **no** Live View restart around the 30th
+minute, and the camera's mirror doesn't move. Ask the user to listen at that minute, if they are nearby.
+
+### 2. Autofocus button
+
+`DoAf` (`0x9154`, no parameters) makes the camera focus, like a half-press of the shutter button. The user tested
+it on Windows and it works.
+
+- **Service:** a new kind of command in the capture thread's queue (next to the property writes), run between
+  frames. Ignore a new request while one is still queued. On success, keep the recovery from firing for **5 s**
+  (the frames may stall while the camera focuses). On failure, report it to the panel as an error.
+- **Control channel and CLI:** a command to request it (e.g. `cam.autofocus`), usable with
+  `canon-eos-webcam set cam.autofocus 1` (or a `canon-eos-webcam af` subcommand), for testing without the panel.
+- **Panel:** an **"Autofocus"** button in the camera group, below Auto Lighting Optimizer, enabled only with the
+  camera connected. Strings (copy them to `linux/src/common/i18n.h`, same texts as Windows):
+  - button: "Autofocus" / "Foco automático";
+  - error: "The camera couldn't autofocus: response %s. Is the lens switch on AF?" / "A câmera não conseguiu
+    focar: resposta %s. A chave da lente está em AF?".
+- **Note for the README:** the lens switch must be on **AF**. The camera focuses with its Live View AF mode (camera
+  menu): **"Live mode"** keeps the image going; in **"Quick mode"** the mirror drops while focusing and the image
+  pauses.
+
+**Acceptance:** with a consumer active, `canon-eos-webcam set cam.autofocus 1` refocuses (check with the
+preview or a probe image), the journal logs the request, and capture stays at ~30 fps without a Live View
+restart. With the lens on MF, the error reaches the panel. The final test of the button is done by the user.
+
+### 3. Hold the last frame during short pauses
+
+On Windows the virtual camera used to flash a text warning screen during the ~2 s of a Live View restart and at
+startup. Now it shows black at startup (up to 10 s) and **repeats the last frame for up to 8 s** during a pause,
+showing a warning only for real problems or after those limits.
+
+On Linux there are no text screens, but `pw_output.cpp` switches to the dark gray placeholder when the last frame
+is older than **1 s** (`LatestFrame(frame, 1000)`), so any Live View restart or autofocus stall shows up as a gray
+flash. Change it to:
+
+- with the camera connected (any state other than "no camera"), accept a last frame up to **8 s** old, so a short
+  pause shows a frozen image instead of gray;
+- with no camera, or after 8 s without frames, the placeholder, as today;
+- keep the counters honest: a repeated frame is not a new camera frame in the frames/s statistics.
+
+**Acceptance:** run a consumer, trigger a Live View restart (e.g. with both 30-minute mechanisms disabled for the
+test, `CANON_EOS_WEBCAM_EVF_REFRESH_S=0` plus a debug switch for `KeepDeviceOn` such as
+`CANON_EOS_WEBCAM_KEEPALIVE=0`, which doesn't exist on Windows yet, then wait for the 30-minute drop), and check that the consumer never gets
+the placeholder during the ~2 s gap. Turning the camera off still leads to the placeholder after at most 8 s.
 
 ## Future: Maxine (not now)
 

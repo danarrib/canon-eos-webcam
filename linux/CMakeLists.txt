@@ -22,6 +22,10 @@ add_executable(canon-eos-webcam
   src/service/log.cpp
   src/common/ini.cpp
   src/service/ptp_usb.cpp
+  src/service/settings.cpp
+  src/service/pipeline.cpp
+  src/service/bridge.cpp
+  src/common/camera_values.cpp
   src/service/canon_camera.cpp
 )
 target_link_libraries(canon-eos-webcam PRIVATE PkgConfig::LIBUSB PkgConfig::TURBOJPEG PkgConfig::PIPEWIRE Threads::Threads)

@@ -176,6 +176,8 @@ double IniDoc::GetDouble(const std::string& section, const std::string& key, dou
 void IniDoc::Set(const std::string& section, const std::string& key, const std::string& value) {
     Section* s = Find(section);
     if (!s) {
+        if (!sections_.empty() && !sections_.back().lines.empty() && !Trim(sections_.back().lines.back().raw).empty())
+            sections_.back().lines.push_back({"", "", ""});  // blank line before the new section
         sections_.push_back({section, {}});
         s = &sections_.back();
     }

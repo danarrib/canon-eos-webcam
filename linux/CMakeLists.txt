@@ -25,6 +25,8 @@ add_executable(canon-eos-webcam
   src/service/settings.cpp
   src/service/pipeline.cpp
   src/service/bridge.cpp
+  src/service/pw_output.cpp
+  src/service/control.cpp
   src/common/camera_values.cpp
   src/service/canon_camera.cpp
 )

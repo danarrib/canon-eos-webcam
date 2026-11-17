@@ -1,0 +1,14 @@
+[Unit]
+Description=Canon EOS webcam (PipeWire virtual camera)
+Documentation=https://github.com/danarrib/canon-eos-webcam
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/canon-eos-webcam run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

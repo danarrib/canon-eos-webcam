@@ -1,0 +1,4 @@
+# OPTIONAL, only useful when gvfs-gphoto2 is installed: stops the file manager's gvfs volume monitor from
+# grabbing the camera (it would keep the USB interface busy). It clears the ID_GPHOTO2 property that
+# libgphoto2's rules set. Runs after them (99). install.sh only installs it when gvfs-gphoto2 is present.
+SUBSYSTEM=="usb", ATTR{idVendor}=="04a9", ENV{ID_GPHOTO2}="", ENV{GPHOTO2_DRIVER}=""

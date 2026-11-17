@@ -171,7 +171,7 @@ int CmdRun() {
     std::string err;
     if (!control.Listen(err)) {
         Log("%s", err.c_str());
-        fprintf(stderr, Tr(Str::CliAlreadyRunning), SocketPath().c_str());
+        if (err.find("already owns") != std::string::npos) fprintf(stderr, Tr(Str::CliAlreadyRunning), SocketPath().c_str());
         return 1;
     }
     bridge.SetOnChange([&] { control.Wake(); });

@@ -1,0 +1,5 @@
+# canon-eos-webcam: lets the logged-in user talk to a Canon camera over USB (libusb), with no root and no
+# groups. systemd-logind adds an ACL for the active session ("uaccess"). Install it in /etc/udev/rules.d so no
+# package update overwrites it, then run: sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=usb
+# (or just replug the camera).
+SUBSYSTEM=="usb", ATTR{idVendor}=="04a9", TAG+="uaccess"

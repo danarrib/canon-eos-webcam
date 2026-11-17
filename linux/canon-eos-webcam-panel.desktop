@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Canon webcam settings
+Name[pt_BR]=Ajustes da webcam Canon
+Comment=Live preview, image adjustments and camera settings for the Canon EOS webcam
+Comment[pt_BR]=Pré-visualização, ajustes de imagem e da câmera para a webcam Canon EOS
+Exec=canon-eos-webcam-panel
+Icon=camera-web
+Terminal=false
+Categories=Settings;HardwareSettings;
+StartupNotify=true

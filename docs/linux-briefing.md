@@ -145,6 +145,7 @@ Codes:
 | `GetViewFinderData` (Canon) | `0x9153` (parameters: `0x00100000, 0, 0`; data from the camera) |
 | `KeepDeviceOn` (Canon) | `0x911D` (no parameters; see "Update: changes made on Windows") |
 | `DoAf` (Canon) | `0x9154` (no parameters; autofocus, like a half-press of the shutter button) |
+| `AfCancel` (Canon) | `0x9160` (no parameters; releases the half-press left by `DoAf`) |
 | `EVFOutputDevice` property | `0xD1B0` (2 = PC, 1 = camera screen only, 0 = off) |
 | `EVFMode` property | `0xD1B3` (1) |
 | OK response | `0x2001` |
@@ -497,6 +498,11 @@ it on Windows and it works.
 - **Service:** a new kind of command in the capture thread's queue (next to the property writes), run between
   frames. Ignore a new request while one is still queued. On success, keep the recovery from firing for **5 s**
   (the frames may stall while the camera focuses). On failure, report it to the panel as an error.
+- **Release the half-press with `AfCancel` (`0x9160`).** `DoAf` leaves the button "half-pressed": with Live View
+  on, the camera then answers `0x2019` (Device Busy) to every property write, including turning Live View off and
+  back on, so the next connection fails. Send `AfCancel` at the end of the 5 s, before any property write or a new
+  `DoAf`, on disconnect, and always right after opening the session (clears a half-press left by another
+  process). The focus stays where it is. (Found and fixed on 2026-11-18, on both platforms.)
 - **Control channel and CLI:** a command to request it (e.g. `cam.autofocus`), usable with
   `canon-eos-webcam set cam.autofocus 1` (or a `canon-eos-webcam af` subcommand), for testing without the panel.
 - **Panel:** an **"Autofocus"** button in the camera group, below Auto Lighting Optimizer, enabled only with the

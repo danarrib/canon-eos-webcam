@@ -100,7 +100,9 @@ public:
     // Writes a structured property (list of 32-bit words).
     PtpResult WritePropWords(uint32_t prop, const std::vector<uint32_t>& words);
     // Starts an autofocus (DoAf), like a half-press of the shutter button. In Live View the camera uses
-    // its Live View AF mode; "Quick mode" lowers the mirror while focusing.
+    // its Live View AF mode; "Quick mode" lowers the mirror while focusing. The camera keeps the button
+    // "half-pressed" (and answers 0x2019 Device Busy to every property write, including turning Live View
+    // off and on) until AfCancel, which GetFrame sends once the focusing had time to finish.
     PtpResult AutoFocus();
 
 private:
@@ -108,6 +110,8 @@ private:
     bool EnableLiveView();
     // Switches the Live View output away from the PC and back (tries to restart the 30-min session timer).
     void RefreshEvfOutput(uint64_t now);
+    // Releases the half-press left by AutoFocus (AfCancel), if there is one. The focus stays where it is.
+    void ReleaseAutoFocus();
     void ParseEvents(const std::vector<BYTE>& d);
 
     PtpDevice dev_;
@@ -122,6 +126,7 @@ private:
     uint64_t lastRecoveryTick_ = 0;
     uint64_t connectTick_ = 0;
     uint64_t afGraceUntil_ = 0;
+    uint64_t afReleaseAt_ = 0;  // 0 = no autofocus waiting for its AfCancel
     uint64_t lastKeepAliveTick_ = 0;
     DWORD keepAliveCode_ = ~0u;  // last KeepDeviceOn response (only changes are logged)
     uint64_t evfRefreshMs_ = 0, lastEvfRefreshTick_ = 0, evfGraceUntil_ = 0;

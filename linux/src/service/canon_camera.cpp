@@ -13,7 +13,8 @@ namespace canon_eos_webcam {
 
 namespace {
 
-// While the camera focuses, the Live View may stall; the recovery leaves it alone for this long.
+// While the camera focuses, the Live View may stall; the recovery leaves it alone for this long, and the AfCancel
+// that releases the half-press goes out at the end of it.
 constexpr uint64_t kAutoFocusGraceMs = 5000;
 // KeepDeviceOn counts as user activity for the camera (one of the two measures against the 30-minute limit).
 constexpr uint64_t kKeepAliveMs = 30000;
@@ -110,6 +111,7 @@ PtpResult CanonCamera::SetPropEx(uint32_t prop, uint32_t value) {
 }
 
 PtpResult CanonCamera::WriteProp(uint32_t prop, uint32_t value) {
+    ReleaseAutoFocus();  // the camera refuses property writes while the half-press is held
     PtpResult r = SetPropEx(prop, value);
     if (r.ok()) {
         std::lock_guard<std::mutex> lk(propsMu_);
@@ -124,6 +126,7 @@ PtpResult CanonCamera::WriteProp(uint32_t prop, uint32_t value) {
 }
 
 PtpResult CanonCamera::WritePropWords(uint32_t prop, const std::vector<uint32_t>& words) {
+    ReleaseAutoFocus();
     std::vector<uint8_t> d(8 + words.size() * 4);
     Put32(d, 0, uint32_t(d.size()));
     Put32(d, 4, prop);
@@ -143,10 +146,23 @@ PtpResult CanonCamera::WritePropWords(uint32_t prop, const std::vector<uint32_t>
 }
 
 PtpResult CanonCamera::AutoFocus() {
+    ReleaseAutoFocus();  // a second click: release the first half-press before pressing again
     PtpResult r = dev_.Exec(PTP_OC_CANON_EOS_DoAf);
-    if (r.ok()) afGraceUntilMs_ = NowMs() + kAutoFocusGraceMs;
+    if (r.ok()) afGraceUntilMs_ = afReleaseAtMs_ = NowMs() + kAutoFocusGraceMs;
     else if (!r.answered()) OnUsbError(r.usbError);
     return r;
+}
+
+void CanonCamera::ReleaseAutoFocus() {
+    if (!afReleaseAtMs_) return;
+    afReleaseAtMs_ = 0;
+    PtpResult r = dev_.Exec(PTP_OC_CANON_EOS_AfCancel);
+    if (r.ok()) return;
+    if (r.answered()) Log("camera: AfCancel refused (response 0x%04X)", r.code);
+    else {
+        Log("camera: AfCancel failed (%s)", UsbErrorName(r.usbError));
+        OnUsbError(r.usbError);
+    }
 }
 
 void CanonCamera::RefreshEvfOutput(uint64_t now) {
@@ -272,6 +288,10 @@ bool CanonCamera::Connect(std::string& error) {
         return false;
     }
     ReadDeviceInfo();
+    // A previous process may have left an autofocus half-press held (the camera then refuses to turn Live View
+    // on with 0x2019): release it. Harmless when there is none.
+    afReleaseAtMs_ = 0;
+    dev_.Exec(PTP_OC_CANON_EOS_AfCancel);
 
     if (!EnableLiveView()) {
         char b[160];
@@ -331,6 +351,7 @@ bool CanonCamera::EnableLiveView() {
 void CanonCamera::Disconnect() {
     if (!dev_.IsOpen()) return;
     if (connected_ && !dev_.Gone()) {
+        ReleaseAutoFocus();
         SetPropEx(PTP_DPC_CANON_EOS_EVFOutputDevice, 0);
         dev_.Exec(PTP_OC_CANON_EOS_SetEventMode, {0});
         dev_.Exec(PTP_OC_CANON_EOS_SetRemoteMode, {0});
@@ -345,6 +366,10 @@ CanonCamera::Frame CanonCamera::GetFrame(std::vector<uint8_t>& jpeg) {
     if (dev_.Gone()) return Frame::Error;
     uint64_t now = NowMs();
     if (now - lastEventMs_ > uint64_t(eventIntervalMs_)) PollEvents();  // drains the camera event queue
+    if (afReleaseAtMs_ && now >= afReleaseAtMs_) {
+        ReleaseAutoFocus();
+        if (dev_.Gone()) return Frame::Error;
+    }
     if (keepAlive_ && now - lastKeepAliveMs_ >= kKeepAliveMs) {
         lastKeepAliveMs_ = now;
         PtpResult k = dev_.Exec(PTP_OC_CANON_EOS_KeepDeviceOn);

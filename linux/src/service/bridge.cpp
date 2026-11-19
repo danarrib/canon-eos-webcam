@@ -44,7 +44,7 @@ void Bridge::Stop() {
         std::lock_guard<std::mutex> lk(cmdMu_);
         rest.swap(cmds_);
     }
-    for (auto& p : rest) p.done(CmdResult::NotConnected);
+    for (auto& p : rest) p.done(CmdResult::NotConnected, 0);
 }
 
 void Bridge::Wake() {
@@ -57,17 +57,27 @@ bool Bridge::Wanted() const {
     return false;
 }
 
-void Bridge::Submit(const CamCommand& cmd, std::function<void(CmdResult)> done) {
+void Bridge::Submit(const CamCommand& cmd, CmdDone done) {
+    bool duplicate = false;
     {
         std::lock_guard<std::mutex> lk(cmdMu_);
-        cmds_.push_back({cmd, std::move(done), NowMs() + kCommandWaitMs});
+        // repeated clicks while the camera hasn't started the previous autofocus would only queue redundant ones
+        if (cmd.kind == CamCommand::Kind::AutoFocus)
+            for (const Pending& p : cmds_) duplicate = duplicate || p.cmd.kind == CamCommand::Kind::AutoFocus;
+        if (!duplicate) cmds_.push_back({cmd, std::move(done), NowMs() + kCommandWaitMs});
     }
+    if (duplicate) { done(CmdResult::Ok, 0); return; }
     cmdCv_.notify_all();
 }
 
-CmdResult Bridge::RunCommand(const CamCommand& c) {
+CmdResult Bridge::RunCommand(const CamCommand& c, uint16_t& code) {
     PtpResult r;
-    if (c.kind == CamCommand::Kind::Prop) {
+    if (c.kind == CamCommand::Kind::AutoFocus) {
+        r = cam_.AutoFocus();
+        if (r.ok()) Log("camera: autofocus requested");
+        else if (r.answered()) Log("camera: autofocus refused (response 0x%04X); is the lens switch on AF?", r.code);
+        else Log("camera: autofocus failed (%s)", UsbErrorName(r.usbError));
+    } else if (c.kind == CamCommand::Kind::Prop) {
         r = cam_.WriteProp(c.prop, c.value);
     } else {
         PropState st;
@@ -80,6 +90,7 @@ CmdResult Bridge::RunCommand(const CamCommand& c) {
         words[base + size_t(c.index)] = uint32_t(int32_t(c.param));
         r = cam_.WritePropWords(sp, words);
     }
+    code = r.code;
     if (r.ok()) return CmdResult::Ok;
     return r.answered() ? CmdResult::Refused : CmdResult::Failed;
 }
@@ -130,7 +141,7 @@ void Bridge::CaptureLoop() {
                         else ++it;
                     }
                 }
-                for (auto& p : expired) p.done(CmdResult::NotConnected);
+                for (auto& p : expired) p.done(CmdResult::NotConnected, 0);
             }
             if (now - lastTryMs < kReconnectIntervalMs) {
                 std::unique_lock<std::mutex> lk(cmdMu_);
@@ -170,8 +181,9 @@ void Bridge::CaptureLoop() {
                 p = std::move(cmds_.front());
                 cmds_.pop_front();
             }
-            CmdResult r = RunCommand(p.cmd);
-            p.done(r);
+            uint16_t code = 0;
+            CmdResult r = RunCommand(p.cmd, code);
+            p.done(r, code);
             if (cam_.PollEvents()) Notify();
         }
 

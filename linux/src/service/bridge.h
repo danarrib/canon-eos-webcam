@@ -46,7 +46,7 @@ struct CameraSnapshot {
 enum class CmdResult { Ok, Refused, NotConnected, Failed };
 
 struct CamCommand {
-    enum class Kind { Prop, StyleParam } kind = Kind::Prop;
+    enum class Kind { Prop, StyleParam, AutoFocus } kind = Kind::Prop;
     uint32_t prop = 0;   // Prop: property code
     uint32_t value = 0;  // Prop: value
     int index = 0;       // StyleParam: 0 contrast, 1 sharpness, 2 saturation, 3 color tone
@@ -75,10 +75,17 @@ public:
     bool TakePreview(std::vector<uint8_t>& rgb, uint64_t& seq);
 
     BridgeStats Stats() const;
+    BridgeState State() const {
+        std::lock_guard<std::mutex> lk(stateMu_);
+        return state_;
+    }
     CameraSnapshot Camera() const;
 
-    // Runs the command on the capture thread, between frames. done is called from that thread.
-    void Submit(const CamCommand& cmd, std::function<void(CmdResult)> done);
+    // Runs the command on the capture thread, between frames. done is called from that thread, with the camera's
+    // PTP response code when it answered (0 otherwise). An autofocus submitted while another one is still queued
+    // is dropped (done(Ok) right away).
+    using CmdDone = std::function<void(CmdResult, uint16_t code)>;
+    void Submit(const CamCommand& cmd, CmdDone done);
 
     // Diagnostics for `bench`.
     void ResetBenchCounters();
@@ -91,7 +98,7 @@ private:
     void Wake();
     bool Wanted() const;
     void Notify() { if (onChange_) onChange_(); }
-    CmdResult RunCommand(const CamCommand& c);
+    CmdResult RunCommand(const CamCommand& c, uint16_t& code);
 
     SettingsStore& settings_;
     std::function<void()> onChange_;
@@ -117,7 +124,7 @@ private:
     // command queue
     struct Pending {
         CamCommand cmd;
-        std::function<void(CmdResult)> done;
+        CmdDone done;
         uint64_t deadlineMs;
     };
     std::mutex cmdMu_;

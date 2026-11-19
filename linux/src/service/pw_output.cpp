@@ -14,6 +14,12 @@
 namespace canon_eos_webcam {
 
 namespace {
+// How old the last processed frame may be and still be sent. With the camera connected, a short pause (Live View
+// being turned back on, an autofocus) shows the last image frozen instead of a gray flash; with no camera, the
+// placeholder comes after a second.
+constexpr uint64_t kHoldConnectedMs = 8000;
+constexpr uint64_t kHoldNoCameraMs = 1000;
+
 spa_video_format SpaFormat(OutFormat f) {
     return f == OutFormat::I420 ? SPA_VIDEO_FORMAT_I420 : f == OutFormat::Nv12 ? SPA_VIDEO_FORMAT_NV12 : SPA_VIDEO_FORMAT_YUY2;
 }
@@ -31,6 +37,7 @@ struct PwOutput::Impl {
     std::vector<uint8_t> frame, placeholder;
     size_t frameSize = 0;
     uint64_t delivered = 0, placeholders = 0;
+    bool onPlaceholder = false;
 
     void Fail(const char* why) {
         Log("pipewire: %s", why);
@@ -88,8 +95,21 @@ struct PwOutput::Impl {
         spa_data& d = b->buffer->datas[0];
         if (d.data && d.maxsize >= s->frameSize) {
             const std::vector<uint8_t>* src = &s->placeholder;
-            if (s->owner->bridge_.LatestFrame(s->frame, 1000)) { src = &s->frame; s->delivered++; }
-            else s->placeholders++;
+            BridgeState st = s->owner->bridge_.State();
+            uint64_t maxAge = st == BridgeState::NoCamera || st == BridgeState::Idle ? kHoldNoCameraMs : kHoldConnectedMs;
+            // (the frames/s statistics come from the bridge, so a repeated frame never counts as a camera frame)
+            if (s->owner->bridge_.LatestFrame(s->frame, maxAge)) {
+                src = &s->frame;
+                s->delivered++;
+                if (s->onPlaceholder) { s->onPlaceholder = false; Log("pipewire: camera frames again"); }
+            } else {
+                s->placeholders++;
+                if (!s->onPlaceholder && s->delivered) {
+                    s->onPlaceholder = true;
+                    Log("pipewire: sending the placeholder (state %s, no frame for over %llu s)", BridgeStateName(st),
+                        static_cast<unsigned long long>(maxAge / 1000));
+                }
+            }
             memcpy(d.data, src->data(), s->frameSize);
             d.chunk->offset = 0;
             d.chunk->size = uint32_t(s->frameSize);

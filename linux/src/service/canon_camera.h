@@ -18,7 +18,9 @@ enum : uint16_t {
     PTP_OC_CANON_EOS_SetRemoteMode = 0x9114,
     PTP_OC_CANON_EOS_SetEventMode = 0x9115,
     PTP_OC_CANON_EOS_GetEvent = 0x9116,
+    PTP_OC_CANON_EOS_KeepDeviceOn = 0x911D,
     PTP_OC_CANON_EOS_GetViewFinderData = 0x9153,
+    PTP_OC_CANON_EOS_DoAf = 0x9154,
 };
 
 // Last reading of a camera property, fed by the PropValueChanged (0xC189) and AvailListChanged (0xC18A)
@@ -73,10 +75,16 @@ public:
     PtpResult WriteProp(uint32_t prop, uint32_t value);
     // Structured property (list of 32-bit words, e.g. the Picture Style parameters).
     PtpResult WritePropWords(uint32_t prop, const std::vector<uint32_t>& words);
+    // Starts an autofocus (DoAf), like a half-press of the shutter button. In Live View the camera uses its Live
+    // View AF mode; "Quick mode" lowers the mirror while focusing.
+    PtpResult AutoFocus();
 
 private:
     PtpResult SetPropEx(uint32_t prop, uint32_t value);
     bool EnableLiveView();
+    // Switches the Live View output away from the PC and back, which restarts the camera's 30-minute Live View
+    // session timer without lowering the mirror.
+    void RefreshEvfOutput(uint64_t now);
     void ParseEvents(const std::vector<uint8_t>& d);
     void ReadDeviceInfo();
     // Handles a USB-level failure: clears the halts (and resets the device after repeated failures).
@@ -93,6 +101,13 @@ private:
     uint64_t lastOkMs_ = 0;
     uint64_t lastRecoveryMs_ = 0;
     uint64_t connectMs_ = 0;
+    uint64_t afGraceUntilMs_ = 0;
+    uint64_t lastKeepAliveMs_ = 0;
+    bool keepAlive_ = true;
+    int keepAliveResult_ = -1;  // last KeepDeviceOn response, or -2 for a USB failure (only changes are logged)
+    uint64_t evfRefreshMs_ = 0, lastEvfRefreshMs_ = 0, evfGraceUntilMs_ = 0;
+    uint32_t evfAlt_ = 1;
+    bool evfRefreshLogged_ = false;
     int recoveries_ = 0;
     int recoveriesSinceOk_ = 0;
 

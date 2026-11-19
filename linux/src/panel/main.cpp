@@ -117,6 +117,7 @@ private:
     Slider *kelvin_ = nullptr, *psSlider_[4] = {};
     Combo *exp_ = nullptr, *iso_ = nullptr, *wb_ = nullptr, *style_ = nullptr, *alo_ = nullptr;
     GtkWidget* reset_ = nullptr;
+    GtkWidget* af_ = nullptr;
 
     bool updating_ = false;
     bool connected_ = false;
@@ -355,7 +356,13 @@ void Panel::BuildUi() {
     msg_ = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(msg_), 0);
     gtk_label_set_wrap(GTK_LABEL(msg_), TRUE);
-    gtk_grid_attach(g, msg_, 0, 11, 3, 1);
+    af_ = gtk_button_new_with_label(Tr(Str::CamAutoFocus));
+    gtk_widget_set_halign(af_, GTK_ALIGN_START);
+    g_signal_connect(af_, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) {
+        static_cast<Panel*>(d)->Set("cam.autofocus", 1, Str::LabelAutoFocus);
+    }), this);
+    gtk_grid_attach(g, af_, 0, 11, 3, 1);
+    gtk_grid_attach(g, msg_, 0, 12, 3, 1);
 
     // room for the AI effects group (NVIDIA Maxine), which comes later
     GtkWidget* fx = gtk_frame_new(Tr(Str::GroupEffectsSoon));
@@ -593,7 +600,13 @@ void Panel::OnResult(const Json& j) {
     const std::string& e = j["error"].Str();
     char b[300];
     const char* what = Tr(label);
-    if (e == "refused") snprintf(b, sizeof b, Tr(Str::CamErrRefused), what);
+    uint32_t code = uint32_t(j["code"].Num(0));
+    if (label == Str::LabelAutoFocus && code && (e == "refused" || e == "failed")) {
+        char c[16];
+        snprintf(c, sizeof c, "0x%04X", code);
+        snprintf(b, sizeof b, Tr(Str::CamErrAutoFocus), c);
+    }
+    else if (e == "refused") snprintf(b, sizeof b, Tr(Str::CamErrRefused), what);
     else if (e == "not_connected") snprintf(b, sizeof b, Tr(Str::CamErrNotConnected), what);
     else snprintf(b, sizeof b, Tr(Str::CamErrOther), what);
     gtk_label_set_text(GTK_LABEL(msg_), b);
@@ -683,6 +696,7 @@ void Panel::SyncCamera() {
     p = conn ? prop(kPropAlo) : nullptr;
     has = p && p->hasValue && p->value < 0x100;
     setCombo(alo_, has, std::vector<uint32_t>{0, 1, 2, 3}, AloName, has ? p->value : 0, has);
+    gtk_widget_set_sensitive(af_, conn);
     updating_ = false;
 }
 

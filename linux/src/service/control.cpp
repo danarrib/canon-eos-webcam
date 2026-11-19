@@ -172,12 +172,13 @@ void Control::Send(Client& c, const Json& j) {
     c.out += '\n';
 }
 
-void Control::Reply(Client& c, int64_t id, const std::string& error) {
+void Control::Reply(Client& c, int64_t id, const std::string& error, uint16_t code) {
     Json r = Json::Object();
     r.Set("type", "result");
     r.Set("id", id);
     r.Set("ok", error.empty());
     if (!error.empty()) r.Set("error", error);
+    if (!error.empty() && code) r.Set("code", code);
     Send(c, r);
 }
 
@@ -228,7 +229,11 @@ void Control::HandleSet(Client& c, const Json& msg) {
     else if (!ParseCamValue(key, text, v)) { Reply(c, id, "bad_value"); return; }
 
     CamCommand cmd;
-    if (key == "cam.exp") { cmd.prop = kPropExpComp; cmd.value = v & 0xFF; }
+    if (key == "cam.autofocus") {
+        if (v != 1) { Reply(c, id, "bad_value"); return; }  // a trigger, not a setting: only 1 makes sense
+        cmd.kind = CamCommand::Kind::AutoFocus;
+    }
+    else if (key == "cam.exp") { cmd.prop = kPropExpComp; cmd.value = v & 0xFF; }
     else if (key == "cam.iso") { cmd.prop = kPropISO; cmd.value = v; }
     else if (key == "cam.wb") { cmd.prop = kPropWhiteBalance; cmd.value = v; }
     else if (key == "cam.kelvin") {
@@ -253,12 +258,12 @@ void Control::HandleSet(Client& c, const Json& msg) {
         return;
     }
     int cid = c.id;
-    bridge_.Submit(cmd, [this, cid, id](CmdResult r) {
+    bridge_.Submit(cmd, [this, cid, id](CmdResult r, uint16_t code) {
         const char* e = r == CmdResult::Ok ? "" : r == CmdResult::Refused ? "refused"
                         : r == CmdResult::NotConnected ? "not_connected" : "failed";
         {
             std::lock_guard<std::mutex> lk(doneMu_);
-            done_.push_back({cid, id, e});
+            done_.push_back({cid, id, e, code});
         }
         Wake();
     });
@@ -413,7 +418,7 @@ void Control::Run(const std::atomic<bool>& stop) {
             { std::lock_guard<std::mutex> lk(doneMu_); d.swap(done_); }
             for (Completed& cp : d)
                 for (Client& c : clients_)
-                    if (c.id == cp.clientId && !c.dead) Reply(c, cp.reqId, cp.error);
+                    if (c.id == cp.clientId && !c.dead) Reply(c, cp.reqId, cp.error, cp.code);
         }
         Broadcast();
         SendPreviews();

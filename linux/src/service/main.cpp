@@ -297,6 +297,11 @@ int CmdSet(int argc, char** argv) {
         if (e == "bad_key") snprintf(msg, sizeof msg, Tr(Str::CliBadKey), key.c_str());
         else if (e == "bad_value") snprintf(msg, sizeof msg, Tr(Str::CliBadValue), value.c_str());
         else if (e == "out_of_range") snprintf(msg, sizeof msg, "%s", Tr(Str::CliOutOfRange));
+        else if (e == "refused" && key == "cam.autofocus") {
+            char c[16];
+            snprintf(c, sizeof c, "0x%04X", unsigned(j["code"].Num(0)));
+            snprintf(msg, sizeof msg, Tr(Str::CamErrAutoFocus), c);
+        }
         else if (e == "refused") snprintf(msg, sizeof msg, "%s", Tr(Str::CliRefused));
         else if (e == "not_connected") snprintf(msg, sizeof msg, "%s", Tr(Str::CliNotConnected));
         else snprintf(msg, sizeof msg, "%s", e.c_str());

@@ -44,9 +44,13 @@ buttons zoom to 100 / 200 / 300 %, drag to pan, double-click to fit; zoomed in i
 so checking focus is meaningful). Right: the six **image adjustments** done by canon-eos-webcam (brightness, contrast,
 gamma, temperature, tint, saturation) and the **camera settings** written to the Canon itself (exposure
 compensation, ISO, white balance, color temperature, Picture Style with contrast / sharpness / saturation / color
-tone, Auto Lighting Optimizer). Only what the camera's current mode allows is enabled. The camera sliders send when
-you release them. A second launch just brings the first window to the front. Opening the panel turns Live View on;
+tone, Auto Lighting Optimizer) plus an **Autofocus** button. Only what the camera's current mode allows is enabled.
+The camera sliders send when you release them. A second launch just brings the first window to the front. Opening the panel turns Live View on;
 closing it turns it off 5 s later. The panel never affects the webcam: if it hangs, the service carries on.
+
+**Autofocus** focuses once, like a half-press of the shutter button. The lens switch must be on **AF**. The camera
+uses its Live View AF mode (camera menu): **Live mode** keeps the image going; in **Quick mode** the mirror drops
+while focusing and the image pauses.
 
 `canon-eos-webcam-panel --snapshot out.png [--preview frame.jpg]` renders the panel with demo data to a PNG without
 showing a window (used for checking the layout).
@@ -74,7 +78,16 @@ loglevel = info    ; info | debug
 
 Language: `CANON_EOS_WEBCAM_LANG` (`en`|`pt`), then `[ui] language`, then `LANG` / `LC_MESSAGES`.
 Other environment variables: `CANON_EOS_WEBCAM_SETTINGS` (another settings file), `CANON_EOS_WEBCAM_SOCKET`,
-`CANON_EOS_WEBCAM_DUMP_EVENTS=1` (log every camera property event in hex).
+`CANON_EOS_WEBCAM_DUMP_EVENTS=1` (log every camera property event in hex), `CANON_EOS_WEBCAM_EVF_REFRESH_S` /
+`CANON_EOS_WEBCAM_EVF_ALT` (interval in seconds and temporary value of the Live View output switch that avoids the
+camera's 30-minute limit; default 300 and 1, `0` turns it off), `CANON_EOS_WEBCAM_KEEPALIVE=0` (stops the
+`KeepDeviceOn` sent every 30 s; for tests only).
+
+The camera ends each Live View session 30 minutes after it starts, which would drop the mirror and pause the image
+for ~2 s. The service avoids it without changing any camera setting: it sends `KeepDeviceOn` every 30 s and, every
+5 minutes, switches the Live View output to the camera screen and back to the PC (~80 ms, no visible pause), which
+restarts that timer. During short pauses with the camera connected (Live View being turned back on, an autofocus) the
+virtual camera repeats the last image for up to 8 s instead of the gray placeholder.
 
 ## Command line
 
@@ -82,7 +95,7 @@ Other environment variables: `CANON_EOS_WEBCAM_SETTINGS` (another settings file)
 |---|---|
 | `canon-eos-webcam run` | the service in the foreground (what systemd starts) |
 | `canon-eos-webcam get` | state of the running service (camera, fps, image adjustments, camera properties) |
-| `canon-eos-webcam set <key> <value>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `cam.style.{contrast,sharpness,saturation,tone}`; camera values accept numbers (`0x81`) or names (`daylight`, `standard`, ISO `400`) |
+| `canon-eos-webcam set <key> <value>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `cam.style.{contrast,sharpness,saturation,tone}`, `cam.autofocus 1` (focuses once); camera values accept numbers (`0x81`) or names (`daylight`, `standard`, ISO `400`) |
 | `canon-eos-webcam probe` | opens the camera, saves one frame to `/tmp/canon-eos-webcam-probe.jpg`, turns everything off |
 | `canon-eos-webcam bench [seconds]` | capture + processing without PipeWire: fps, ms per frame, CPU |
 | `canon-eos-webcam process in.jpg out.yuv [debug.jpg]` | runs the pipeline over a JPEG, no camera |

@@ -43,9 +43,13 @@ roda do mouse ou os botões dão zoom 100 / 200 / 300 %, arrastar move, duplo cl
 completo de 1280 de largura, para conferir o foco). À direita: os seis **ajustes de imagem** feitos pelo
 canon-eos-webcam (brilho, contraste, gamma, temperatura, tom, saturação) e os **ajustes da câmera**, gravados na
 própria Canon (compensação de exposição, ISO, balanço de branco, temperatura de cor, Picture Style com contraste /
-nitidez / saturação / tom de cor, Auto Lighting Optimizer). Só o que o modo atual da câmera permite fica habilitado.
-Os sliders da câmera enviam quando você solta. Abrir uma segunda vez só traz a primeira janela para a frente. Abrir o
+nitidez / saturação / tom de cor, Auto Lighting Optimizer), além de um botão **Foco automático**. Só o que o modo
+atual da câmera permite fica habilitado. Os sliders da câmera enviam quando você solta. Abrir uma segunda vez só traz a primeira janela para a frente. Abrir o
 painel liga o Live View; fechar desliga 5 s depois. O painel nunca afeta a webcam: se ele travar, o serviço continua.
+
+**Foco automático** foca uma vez, como apertar o botão do obturador até a metade. A chave da lente precisa estar em
+**AF**. A câmera usa o modo de AF do Live View (menu da câmera): no **modo Ao vivo** a imagem continua; no **modo
+Rápido** o espelho desce enquanto foca e a imagem pausa.
 
 `canon-eos-webcam-panel --snapshot saida.png [--preview quadro.jpg]` desenha o painel com dados de demonstração em um
 PNG sem mostrar janela (serve para conferir o layout).
@@ -73,7 +77,16 @@ loglevel = info    ; info | debug
 
 Idioma: `CANON_EOS_WEBCAM_LANG` (`en`|`pt`), depois `[ui] language`, depois `LANG` / `LC_MESSAGES`.
 Outras variáveis: `CANON_EOS_WEBCAM_SETTINGS` (outro arquivo de ajustes), `CANON_EOS_WEBCAM_SOCKET`,
-`CANON_EOS_WEBCAM_DUMP_EVENTS=1` (registra cada evento de propriedade da câmera em hexadecimal).
+`CANON_EOS_WEBCAM_DUMP_EVENTS=1` (registra cada evento de propriedade da câmera em hexadecimal),
+`CANON_EOS_WEBCAM_EVF_REFRESH_S` / `CANON_EOS_WEBCAM_EVF_ALT` (intervalo em segundos e valor temporário da troca de
+saída do Live View que evita o limite de 30 minutos da câmera; padrão 300 e 1, `0` desliga),
+`CANON_EOS_WEBCAM_KEEPALIVE=0` (para o `KeepDeviceOn` enviado a cada 30 s; só para testes).
+
+A câmera encerra cada sessão de Live View 30 minutos depois de começar, o que baixaria o espelho e pausaria a imagem
+por ~2 s. O serviço evita isso sem mudar nenhum ajuste da câmera: manda `KeepDeviceOn` a cada 30 s e, a cada 5
+minutos, troca a saída do Live View para a tela da câmera e de volta para o PC (~80 ms, sem pausa visível), o que
+reinicia esse cronômetro. Em pausas curtas com a câmera conectada (o Live View sendo religado, um foco automático), a
+câmera virtual repete a última imagem por até 8 s em vez do quadro cinza.
 
 ## Linha de comando
 
@@ -81,7 +94,7 @@ Outras variáveis: `CANON_EOS_WEBCAM_SETTINGS` (outro arquivo de ajustes), `CANO
 |---|---|
 | `canon-eos-webcam run` | o serviço em primeiro plano (o que o systemd inicia) |
 | `canon-eos-webcam get` | estado do serviço em execução (câmera, fps, ajustes de imagem, propriedades da câmera) |
-| `canon-eos-webcam set <chave> <valor>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `cam.style.{contrast,sharpness,saturation,tone}`; os valores da câmera aceitam números (`0x81`) ou nomes em inglês (`daylight`, `standard`, ISO `400`) |
+| `canon-eos-webcam set <chave> <valor>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `cam.style.{contrast,sharpness,saturation,tone}`, `cam.autofocus 1` (foca uma vez); os valores da câmera aceitam números (`0x81`) ou nomes em inglês (`daylight`, `standard`, ISO `400`) |
 | `canon-eos-webcam probe` | abre a câmera, salva um quadro em `/tmp/canon-eos-webcam-probe.jpg`, desliga tudo |
 | `canon-eos-webcam bench [segundos]` | captura + processamento sem PipeWire: fps, ms por quadro, CPU |
 | `canon-eos-webcam process in.jpg out.yuv [debug.jpg]` | roda o pipeline sobre um JPEG, sem câmera |

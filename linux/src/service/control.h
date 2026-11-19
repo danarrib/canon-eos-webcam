@@ -55,6 +55,7 @@ private:
         int clientId;
         int64_t reqId;
         std::string error;  // empty = ok
+        uint16_t code;      // the camera's PTP response code (0 = none)
     };
 
     void Accept();
@@ -67,7 +68,7 @@ private:
     Json CameraJson(const CameraSnapshot& snap) const;
     void Broadcast();
     void SendPreviews();
-    void Reply(Client& c, int64_t id, const std::string& error);
+    void Reply(Client& c, int64_t id, const std::string& error, uint16_t code = 0);
     void RefreshConsumers();
 
     Bridge& bridge_;

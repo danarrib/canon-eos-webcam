@@ -56,6 +56,7 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(CamPsSaturation, "Saturation", "Saturação") \
     X(CamPsColorTone, "Color tone", "Tom de cor") \
     X(CamAlo, "Auto Lighting Optimizer", "Auto Lighting Optimizer") \
+    X(CamAutoFocus, "Autofocus", "Foco automático") \
     X(CamDisconnected, "Camera disconnected or turned off: settings unavailable.", \
                        "Câmera desconectada ou desligada: ajustes indisponíveis.") \
     X(CamModeHint, "%s (only the settings the current mode allows)", "%s (só os ajustes que o modo atual permite)") \
@@ -69,11 +70,14 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(LabelPictureStyle, "Picture Style", "Picture Style") \
     X(LabelPsParam, "Picture Style parameter", "parâmetro do Picture Style") \
     X(LabelAlo, "Auto Lighting Optimizer", "Auto Lighting Optimizer") \
+    X(LabelAutoFocus, "autofocus", "foco automático") \
     X(CamErrNotConnected, "The camera is not connected: couldn't set the %s.", \
                           "A câmera não está conectada: não deu para ajustar %s.") \
     X(CamErrRefused, "The camera refused the setting (%s). Automatic mode?", \
                      "A câmera recusou o ajuste (%s). Modo automático?") \
     X(CamErrOther, "Couldn't set the %s.", "Não deu para ajustar %s.") \
+    X(CamErrAutoFocus, "The camera couldn't autofocus: response %s. Is the lens switch on AF?", \
+                       "A câmera não conseguiu focar: resposta %s. A chave da lente está em AF?") \
     /* white balance (Canon names) */ \
     X(WbAuto, "Auto", "Automático") \
     X(WbDaylight, "Daylight", "Luz do dia") \
@@ -126,6 +130,7 @@ enum class Lang : int { En = 0, Pt = 1 };
       "                                        image.{brightness,contrast,gamma,temperature,tint,saturation}\n" \
       "                                        cam.{exp,iso,wb,kelvin,style,alo}\n" \
       "                                        cam.style.{contrast,sharpness,saturation,tone}\n" \
+      "                                        cam.autofocus 1 (focuses once)\n" \
       "  canon-eos-webcam probe                save one frame to /tmp/canon-eos-webcam-probe.jpg\n" \
       "  canon-eos-webcam bench [seconds]      capture + process without PipeWire and measure\n" \
       "  canon-eos-webcam process in.jpg out.yuv [debug.jpg]   run the pipeline over a JPEG\n" \
@@ -138,6 +143,7 @@ enum class Lang : int { En = 0, Pt = 1 };
       "                                        image.{brightness,contrast,gamma,temperature,tint,saturation}\n" \
       "                                        cam.{exp,iso,wb,kelvin,style,alo}\n" \
       "                                        cam.style.{contrast,sharpness,saturation,tone}\n" \
+      "                                        cam.autofocus 1 (foca uma vez)\n" \
       "  canon-eos-webcam probe                salva um quadro em /tmp/canon-eos-webcam-probe.jpg\n" \
       "  canon-eos-webcam bench [segundos]     captura + processa sem PipeWire e mede\n" \
       "  canon-eos-webcam process in.jpg out.yuv [debug.jpg]   roda o pipeline sobre um JPEG\n" \

@@ -243,6 +243,8 @@ int CmdGet() {
             printf("image     : brightness %d, contrast %d, gamma %.2f, temperature %d, tint %d, saturation %d\n",
                    j["brightness"].Int(), j["contrast"].Int(), j["gamma"].Num(), j["temperature"].Int(), j["tint"].Int(),
                    j["saturation"].Int());
+            if (j["upscale"].Str() == "bilinear") printf("scale     : bilinear to 1920x1080\n");
+            else printf("scale     : FSR 1 to 1920x1080, sharpening %.2f\n", j["sharpness"].Num());
             got++;
         } else if (t == "camera") {
             printf("camera props (gen %d):\n", j["gen"].Int());

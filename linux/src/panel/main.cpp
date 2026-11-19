@@ -118,6 +118,8 @@ private:
     Combo *exp_ = nullptr, *iso_ = nullptr, *wb_ = nullptr, *style_ = nullptr, *alo_ = nullptr;
     GtkWidget* reset_ = nullptr;
     GtkWidget* af_ = nullptr;
+    Combo* scaleMode_ = nullptr;
+    Slider* scaleSharp_ = nullptr;
 
     bool updating_ = false;
     bool connected_ = false;
@@ -159,6 +161,7 @@ void Panel::UpdateValueLabel(Slider* s) {
     char b[40];
     const std::string& k = s->key;
     if (k == "image.gamma") snprintf(b, sizeof b, "%.2f", v / 100.0);
+    else if (k == "scale.sharpness") snprintf(b, sizeof b, "%.1f", v / 10.0);
     else if (k == "image.saturation") snprintf(b, sizeof b, "%d%%", v);
     else if (k == "cam.kelvin") snprintf(b, sizeof b, "%d K", v);
     else if (k == "cam.style.sharpness") snprintf(b, sizeof b, "%d", v);
@@ -330,12 +333,24 @@ void Panel::BuildUi() {
     g_signal_connect(reset_, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) {
         auto* p = static_cast<Panel*>(d);
         for (auto& s : p->sliders_)
-            if (!s->camera) {
+            if (s->key.rfind("image.", 0) == 0) {  // the image adjustments only, not the scaling
                 p->SetSliderValue(s.get(), s->def);
                 p->SendSlider(s.get());
             }
     }), this);
     gtk_grid_attach(g, reset_, 0, 6, 3, 1);
+
+    // scaling of the 1056x594 crop to 1920x1080: lets the user compare FSR 1 and bilinear live
+    gtk_box_append(GTK_BOX(right), Group(Tr(Str::GroupScale), &g));
+    scaleMode_ = AddCombo(g, 0, Str::ScaleMethod, "scale.mode", Str::None);
+    FillCombo(scaleMode_, {0, 1}, +[](uint32_t v) { return std::string(Tr(v ? Str::ScaleBilinear : Str::ScaleFsr)); },
+              0, true);
+    scaleSharp_ = AddSlider(g, 1, Str::ScaleSharpness, "scale.sharpness", 0, 20, 2, false);
+    GtkWidget* scaleHint = gtk_label_new(Tr(Str::ScaleHint));
+    gtk_label_set_xalign(GTK_LABEL(scaleHint), 0);
+    gtk_label_set_wrap(GTK_LABEL(scaleHint), TRUE);
+    gtk_widget_add_css_class(scaleHint, "dim-label");
+    gtk_grid_attach(g, scaleHint, 0, 2, 3, 1);
 
     gtk_box_append(GTK_BOX(right), Group(Tr(Str::GroupCamera), &g));
     info_ = gtk_label_new("");
@@ -458,6 +473,7 @@ void Panel::SendSlider(Slider* s) {
     if (s->timer) { g_source_remove(s->timer); s->timer = 0; }
     double v = gtk_range_get_value(GTK_RANGE(s->scale));
     if (s->key == "image.gamma") v /= 100.0;
+    else if (s->key == "scale.sharpness") v /= 10.0;
     Set(s->key, std::round(v * 100) / 100, s->camera ? (s->key == "cam.kelvin" ? Str::LabelColorTemp : Str::LabelPsParam) : Str::None);
 }
 
@@ -559,8 +575,17 @@ void Panel::OnStatus(const Json& j) {
 }
 
 void Panel::OnImage(const Json& j) {
+    if (j.Has("upscale")) {
+        bool fsr = j["upscale"].Str() != "bilinear";
+        updating_ = true;
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(scaleMode_->dd), fsr ? 0 : 1);
+        updating_ = false;
+        EnableSlider(scaleSharp_, fsr);  // the sharpening is part of FSR (RCAS); bilinear has none
+    }
+    if (j.Has("sharpness") && !scaleSharp_->pressed)
+        SetSliderValue(scaleSharp_, int(std::lround(j["sharpness"].Num() * 10)));
     for (auto& s : sliders_) {
-        if (s->camera || s->pressed) continue;
+        if (s->key.rfind("image.", 0) != 0 || s->pressed) continue;
         const std::string name = s->key.substr(6);
         if (!j.Has(name)) continue;
         double v = j[name].Num();
@@ -729,7 +754,7 @@ void Panel::OnPreview(const Json& j) {
 double Panel::Scale(int w, int h) const {
     double fit = std::min(double(w) / frameW_, double(h) / frameH_);
     if (zoom_ == 0) return fit;
-    return double(zoom_) * 1280.0 / frameW_;  // 100% = one source pixel of the 1280x720 frame per screen pixel
+    return double(zoom_) * 1920.0 / frameW_;  // 100% = one source pixel of the 1920x1080 frame per screen pixel
 }
 
 void Panel::ClampPan(int w, int h) {
@@ -747,8 +772,8 @@ void Panel::SetZoom(int index) {
     panX_ = panY_ = 0;
     if (!gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(zoomBtn_[index])))
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(zoomBtn_[index]), TRUE);
-    // zoomed in, the panel asks for the full 1280 wide frame so checking focus is meaningful
-    if (client_) client_->Subscribe(true, index == 0 ? 640 : 1280);
+    // zoomed in, the panel asks for the full 1920 wide frame so checking focus is meaningful
+    if (client_) client_->Subscribe(true, index == 0 ? 640 : 1920);
     gtk_widget_queue_draw(area_);
 }
 
@@ -808,7 +833,8 @@ static int RunSnapshot(int argc, char** argv) {
     panel.FeedState(true);
     const char* status = "{\"type\":\"status\",\"state\":\"live\",\"camera\":true,\"name\":\"Canon EOS REBEL T3\","
                          "\"fps_in\":29.9,\"fps_out\":29.9,\"ms\":7.8,\"consumers\":1,\"panels\":1,\"pipewire\":true}";
-    const char* image = "{\"type\":\"image\",\"brightness\":10,\"contrast\":-20,\"gamma\":1.2,\"temperature\":5,\"tint\":0,\"saturation\":110}";
+    const char* image = "{\"type\":\"image\",\"brightness\":10,\"contrast\":-20,\"gamma\":1.2,\"temperature\":5,\"tint\":0,\"saturation\":110,"
+                        "\"upscale\":\"fsr\",\"sharpness\":0.2}";
     const char* cam = "{\"type\":\"camera\",\"gen\":3,\"connected\":true,\"name\":\"Canon EOS REBEL T3\",\"props\":{"
         "\"D103\":{\"value\":0,\"raw\":\"00000000\",\"list\":[]},"
         "\"D104\":{\"value\":11,\"raw\":\"0b000000\",\"list\":[232,235,237,240,243,245,248,251,253,0,3,5,8,11,13,16,19,21,24]},"

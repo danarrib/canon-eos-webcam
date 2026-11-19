@@ -71,7 +71,7 @@ public:
 
     // Latest processed frame in the output format. False if there is none newer than maxAgeMs.
     bool LatestFrame(std::vector<uint8_t>& out, uint64_t maxAgeMs, uint64_t* seq = nullptr) const;
-    // Latest final RGB frame (1280x720) handed over for the preview (at most ~15 per second).
+    // Latest final RGB frame (1920x1080) handed over for the preview (at most ~15 per second).
     bool TakePreview(std::vector<uint8_t>& rgb, uint64_t& seq);
 
     BridgeStats Stats() const;

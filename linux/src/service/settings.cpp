@@ -35,6 +35,8 @@ Settings SettingsStore::FromDoc(const IniDoc& d) {
     s.crop = crop == "center" ? CropAnchor::Center : crop == "top" ? CropAnchor::Top : CropAnchor::Bottom;
     std::string fmt = Lower(d.Get("linux", "format", "yuy2"));
     s.format = fmt == "i420" ? OutFormat::I420 : fmt == "nv12" ? OutFormat::Nv12 : OutFormat::Yuy2;
+    s.upscale = Lower(d.Get("linux", "upscale", "fsr")) == "bilinear" ? Upscale::Bilinear : Upscale::Fsr;
+    s.sharpness = float(std::max(0.0, std::min(2.0, d.GetDouble("linux", "sharpness", 0.2))));
     s.debugLog = Lower(d.Get("linux", "loglevel", "info")) == "debug";
     return s;
 }
@@ -51,6 +53,10 @@ void SettingsStore::ToDoc(const Settings& s) {
     const char* crop = s.crop == CropAnchor::Center ? "center" : s.crop == CropAnchor::Top ? "top" : "bottom";
     doc_.Set("linux", "crop", crop);
     doc_.Set("linux", "format", FormatName(s.format));
+    doc_.Set("linux", "upscale", s.upscale == Upscale::Bilinear ? "bilinear" : "fsr");
+    char sh[32];
+    snprintf(sh, sizeof sh, "%.2f", double(s.sharpness));
+    doc_.Set("linux", "sharpness", sh);
 }
 
 SettingsStore::~SettingsStore() {
@@ -132,7 +138,8 @@ void SettingsStore::OnInotify() {
     lastContent_ = text;
     doc_.Parse(text);
     Settings s = FromDoc(doc_);
-    if (!(s.image == cur_.image) || s.crop != cur_.crop || s.format != cur_.format) {
+    if (!(s.image == cur_.image) || s.crop != cur_.crop || s.format != cur_.format ||
+        s.upscale != cur_.upscale || s.sharpness != cur_.sharpness) {
         cur_ = s;
         version_++;
         Log("settings: reloaded %s", path_.c_str());

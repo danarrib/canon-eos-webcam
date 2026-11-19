@@ -5,7 +5,7 @@
 // Client -> service:
 //   {"cmd":"get"}                                      one-shot: status, image and camera messages
 //   {"cmd":"subscribe","preview":true,"size":640}      panel: counts as a consumer, receives updates (and the
-//                                                      preview JPEG when asked); size = preview width (160..1280)
+//                                                      preview JPEG when asked); size = preview width (160..1920)
 //   {"cmd":"unsubscribe"}
 //   {"cmd":"set","key":"image.brightness","value":20,"id":1}   -> {"type":"result","id":1,"ok":true}
 // Service -> client: status, image, camera, preview, result (see control.cpp).

@@ -1,13 +1,20 @@
 #include "pipeline.h"
 
+#include "fsr1.h"
 #include "log.h"
 
 #include <turbojpeg.h>
 
 #include <algorithm>
 #include <cmath>
+#include <atomic>
+#include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <chrono>
+#include <functional>
+#include <mutex>
+#include <thread>
 
 namespace canon_eos_webcam {
 
@@ -23,6 +30,87 @@ inline uint8_t Cl(int v) { return uint8_t(v < 0 ? 0 : (v > 255 ? 255 : v)); }
 inline uint8_t LumaOf(int r, int g, int b) { return uint8_t(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16); }
 inline uint8_t CbOf(int r, int g, int b) { return Cl(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128); }
 inline uint8_t CrOf(int r, int g, int b) { return Cl(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128); }
+
+// Small persistent thread pool: Run(n, fn) calls fn(worker, i) for i in [0, n) across the workers (the calling
+// thread is worker 0) and returns when all are done. Nothing is created per frame; idle workers sleep.
+class Pool {
+public:
+    explicit Pool(int threads) : n_(std::max(1, threads)) {
+        for (int i = 1; i < n_; i++) th_.emplace_back([this, i] { Loop(i); });
+    }
+    ~Pool() {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            quit_ = true;
+        }
+        cv_.notify_all();
+        for (auto& t : th_) t.join();
+    }
+    int Size() const { return n_; }
+    void Run(int count, const std::function<void(int, int)>& fn) {
+        if (count <= 0) return;
+        if (n_ == 1 || count == 1) {
+            for (int i = 0; i < count; i++) fn(0, i);
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            fn_ = &fn;
+            count_ = count;
+            next_.store(0);
+            active_ = n_ - 1;
+            gen_++;
+        }
+        cv_.notify_all();
+        Work(0);
+        std::unique_lock<std::mutex> lk(mu_);
+        done_.wait(lk, [&] { return active_ == 0; });
+        fn_ = nullptr;
+    }
+
+private:
+    void Work(int worker) {
+        for (;;) {
+            int i = next_.fetch_add(1);
+            if (i >= count_) break;
+            (*fn_)(worker, i);
+        }
+    }
+    void Loop(int worker) {
+        uint64_t seen = 0;
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(mu_);
+                cv_.wait(lk, [&] { return quit_ || gen_ != seen; });
+                if (quit_) return;
+                seen = gen_;
+            }
+            Work(worker);
+            std::lock_guard<std::mutex> lk(mu_);
+            if (--active_ == 0) done_.notify_one();
+        }
+    }
+    int n_;
+    std::vector<std::thread> th_;
+    std::mutex mu_;
+    std::condition_variable cv_, done_;
+    const std::function<void(int, int)>* fn_ = nullptr;
+    int count_ = 0, active_ = 0;
+    uint64_t gen_ = 0;
+    bool quit_ = false;
+    std::atomic<int> next_{0};
+};
+
+int PoolThreads() {
+    if (const char* e = getenv("CANON_EOS_WEBCAM_THREADS")) {
+        int v = atoi(e);
+        if (v >= 1 && v <= 64) return v;
+    }
+    int hw = int(std::thread::hardware_concurrency());
+    return std::max(1, std::min(hw > 0 ? hw : 4, 16));
+}
+
+constexpr int kBandRows = 30;  // output rows per band (even: the chroma is 2x2)
 
 struct AdjustLut {
     uint8_t r[256], g[256], b[256];
@@ -53,8 +141,8 @@ void BuildAdjust(const ImageSettings& s, AdjustLut& lut) {
     build(lut.b, gainB);
 }
 
-void ApplyAdjust(const AdjustLut& a, RgbView& v) {
-    for (int y = 0; y < v.height; y++) {
+void ApplyAdjustRows(const AdjustLut& a, const RgbView& v, int y0, int y1) {
+    for (int y = y0; y < y1; y++) {
         uint8_t* p = v.data + size_t(y) * size_t(v.stride);
         for (int x = 0; x < v.width; x++, p += 3) {
             int r = a.r[p[0]], g = a.g[p[1]], b = a.b[p[2]];
@@ -96,10 +184,11 @@ struct HTable {
     }
 };
 
-void ScaleBilinear(const RgbView& src, HTable& t, std::vector<uint8_t>& tmp, uint8_t* dst, int dw, int dh) {
-    t.Build(src.width, dw);
+// Output rows [y0, y1) of the dw x dh result (dst is the whole image). t must have been built.
+void ScaleBilinearRows(const RgbView& src, const HTable& t, std::vector<uint8_t>& tmp, uint8_t* dst, int dw, int dh,
+                       int y0, int y1) {
     tmp.resize(size_t(src.width) * 3);
-    for (int y = 0; y < dh; y++) {
+    for (int y = y0; y < y1; y++) {
         double sy = (y + 0.5) * src.height / dh - 0.5;
         int a = int(std::floor(sy));
         double f = sy - a;
@@ -125,10 +214,11 @@ void ScaleBilinear(const RgbView& src, HTable& t, std::vector<uint8_t>& tmp, uin
 }
 
 // RGB (w x h, both even) -> YUY2 / I420 / NV12. Chroma is averaged over the 2 (YUY2) or 2x2 (planar) pixels.
-void ConvertOut(const uint8_t* rgb, int w, int h, OutFormat f, uint8_t* out) {
+// Only rows [y0, y1) (y0 and y1 even) are converted.
+void ConvertOutRows(const uint8_t* rgb, int w, int h, OutFormat f, uint8_t* out, int y0, int y1) {
     auto px = [&](int x, int y) { return rgb + (size_t(y) * size_t(w) + size_t(x)) * 3; };
     if (f == OutFormat::Yuy2) {
-        for (int y = 0; y < h; y++) {
+        for (int y = y0; y < y1; y++) {
             const uint8_t* p = px(0, y);
             uint8_t* o = out + size_t(y) * size_t(w) * 2;
             for (int x = 0; x < w; x += 2, p += 6, o += 4) {
@@ -145,7 +235,7 @@ void ConvertOut(const uint8_t* rgb, int w, int h, OutFormat f, uint8_t* out) {
     uint8_t* yp = out;
     uint8_t* up = out + size_t(w) * size_t(h);
     uint8_t* vp = up + size_t(w / 2) * size_t(h / 2);  // I420 only; NV12 interleaves in up
-    for (int y = 0; y < h; y += 2) {
+    for (int y = y0; y < y1; y += 2) {
         for (int x = 0; x < w; x += 2) {
             const uint8_t* a = px(x, y);
             const uint8_t* b = px(x + 1, y);
@@ -168,6 +258,7 @@ void ConvertOut(const uint8_t* rgb, int w, int h, OutFormat f, uint8_t* out) {
             }
         }
     }
+    (void)h;
 }
 
 }  // namespace
@@ -180,14 +271,16 @@ size_t OutputFrameSize(OutFormat f) {
 void FillPlaceholder(OutFormat f, std::vector<uint8_t>& out) {
     std::vector<uint8_t> rgb(size_t(kOutWidth) * size_t(kOutHeight) * 3, 40);
     out.resize(OutputFrameSize(f));
-    ConvertOut(rgb.data(), kOutWidth, kOutHeight, f, out.data());
+    ConvertOutRows(rgb.data(), kOutWidth, kOutHeight, f, out.data(), 0, kOutHeight);
 }
 
 struct Pipeline::Impl {
     tjhandle tj = nullptr;
     std::vector<uint8_t> decoded;
-    std::vector<uint8_t> scaled;  // 1280x720 RGB
-    std::vector<uint8_t> tmp;
+    std::vector<uint8_t> scaled;  // 1920x1080 RGB
+    std::vector<std::vector<uint8_t>> tmp;  // bilinear row scratch, per worker
+    Pool pool{PoolThreads()};
+    Fsr1 fsr;
     HTable table;
     AdjustLut lut;
     ImageSettings lutFor;
@@ -227,24 +320,62 @@ bool Pipeline::Process(const uint8_t* jpeg, size_t size, const Settings& s, std:
             m.lutFor = s.image;
             m.lutValid = true;
         }
-        ApplyAdjust(m.lut, view);
+        const int nb = (view.height + kBandRows - 1) / kBandRows;
+        m.pool.Run(nb, [&](int, int i) { ApplyAdjustRows(m.lut, view, i * kBandRows, std::min(view.height, (i + 1) * kBandRows)); });
     }
     auto t3 = Clock::now();
 
     m.scaled.resize(size_t(kOutWidth) * size_t(kOutHeight) * 3);
-    ScaleBilinear(view, m.table, m.tmp, m.scaled.data(), kOutWidth, kOutHeight);
-    auto t4 = Clock::now();
-
     out.resize(OutputFrameSize(s.format));
-    ConvertOut(m.scaled.data(), kOutWidth, kOutHeight, s.format, out.data());
-    auto t5 = Clock::now();
+    const int nb = (kOutHeight + kBandRows - 1) / kBandRows;
+    auto band = [&](int i, int& y0, int& y1) { y0 = i * kBandRows; y1 = std::min(kOutHeight, y0 + kBandRows); };
+    double scaleMs = 0, convertMs = 0;
+    Clock::time_point t4, t5;
+    if (s.upscale == Upscale::Fsr) {
+        // FSR 1: planar float load, then per band EASU + RCAS + conversion, so the band stays in cache.
+        m.fsr.Configure(view.width, view.height, kOutWidth, kOutHeight, s.sharpness, m.pool.Size());
+        const int nsrc = (view.height + kBandRows - 1) / kBandRows;
+        m.pool.Run(nsrc, [&](int, int i) {
+            m.fsr.LoadRows(view.data, view.stride, i * kBandRows, std::min(view.height, (i + 1) * kBandRows));
+        });
+        std::atomic<int64_t> convNs{0};
+        m.pool.Run(nb, [&](int w, int i) {
+            int y0, y1;
+            band(i, y0, y1);
+            uint8_t* d = m.scaled.data() + size_t(y0) * size_t(kOutWidth) * 3;
+            m.fsr.RenderBand(w, y0, y1, d, kOutWidth * 3);
+            auto c0 = Clock::now();
+            ConvertOutRows(m.scaled.data(), kOutWidth, kOutHeight, s.format, out.data(), y0, y1);
+            convNs += std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - c0).count();
+        });
+        t4 = t5 = Clock::now();
+        convertMs = double(convNs.load()) / 1e6 / m.pool.Size();  // CPU time spread over the workers (approximate)
+        scaleMs = Ms(t3, t4) - convertMs;
+    } else {
+        m.table.Build(view.width, kOutWidth);
+        if (int(m.tmp.size()) != m.pool.Size()) m.tmp.assign(size_t(m.pool.Size()), {});
+        m.pool.Run(nb, [&](int w, int i) {
+            int y0, y1;
+            band(i, y0, y1);
+            ScaleBilinearRows(view, m.table, m.tmp[size_t(w)], m.scaled.data(), kOutWidth, kOutHeight, y0, y1);
+        });
+        t4 = Clock::now();
+        m.pool.Run(nb, [&](int, int i) {
+            int y0, y1;
+            band(i, y0, y1);
+            ConvertOutRows(m.scaled.data(), kOutWidth, kOutHeight, s.format, out.data(), y0, y1);
+        });
+        t5 = Clock::now();
+        scaleMs = Ms(t3, t4);
+        convertMs = Ms(t4, t5);
+    }
     if (rgb) *rgb = m.scaled;
 
     if (times) {
         times->decodeMs = Ms(t0, t1);
         times->adjustMs = Ms(t2, t3);
-        times->scaleMs = Ms(t3, t4);
-        times->convertMs = Ms(t4, t5);
+        times->scaleMs = scaleMs;
+        times->convertMs = convertMs;
         times->totalMs = Ms(t0, t5);
     }
     return true;

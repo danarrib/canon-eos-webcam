@@ -1,4 +1,4 @@
-// The PipeWire virtual camera: a Video/Source node (media.role = Camera) with 1280x720 @ 30 fps in a single
+// The PipeWire virtual camera: a Video/Source node (media.role = Camera) with 1920x1080 @ 30 fps in a single
 // pixel format. The stream is the graph driver: a 30 Hz timer (armed only while a consumer is linked) triggers
 // each cycle and the process callback always delivers the last processed frame (repeated when no new one
 // arrived), or a dark gray placeholder when there is no recent camera image. A PipeWire restart is survived by

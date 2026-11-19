@@ -44,6 +44,13 @@ enum class Lang : int { En = 0, Pt = 1 };
     X(ImgTint, "Tint (green/magenta)", "Tom (verde/magenta)") \
     X(ImgSaturation, "Saturation", "Saturação") \
     X(ImgReset, "Restore defaults", "Restaurar padrões") \
+    X(GroupScale, "Scaling to 1080p", "Escala para 1080p") \
+    X(ScaleMethod, "Method", "Método") \
+    X(ScaleFsr, "FSR 1 (sharper edges)", "FSR 1 (bordas mais nítidas)") \
+    X(ScaleBilinear, "Bilinear (lighter on the CPU)", "Bilinear (mais leve para a CPU)") \
+    X(ScaleSharpness, "FSR sharpening", "Nitidez do FSR") \
+    X(ScaleHint, "Left = sharper. Compare the two with the zoom at 100%.", \
+                 "Esquerda = mais nítido. Compare os dois com o zoom em 100%.") \
     /* ---- camera settings */ \
     X(GroupCamera, "Camera (settings stored in the camera itself)", "Câmera (ajustes guardados pela própria câmera)") \
     X(CamExpComp, "Exposure compensation", "Compensação de exposição") \
@@ -129,6 +136,7 @@ enum class Lang : int { En = 0, Pt = 1 };
       "  canon-eos-webcam set <key> <value>    change a setting of the running service\n" \
       "                                        image.{brightness,contrast,gamma,temperature,tint,saturation}\n" \
       "                                        cam.{exp,iso,wb,kelvin,style,alo}\n" \
+      "                                        scale.mode {fsr,bilinear}, scale.sharpness 0..2 (0 = sharpest)\n" \
       "                                        cam.style.{contrast,sharpness,saturation,tone}\n" \
       "                                        cam.autofocus 1 (focuses once)\n" \
       "  canon-eos-webcam probe                save one frame to /tmp/canon-eos-webcam-probe.jpg\n" \
@@ -142,6 +150,7 @@ enum class Lang : int { En = 0, Pt = 1 };
       "  canon-eos-webcam set <chave> <valor>  muda um ajuste do serviço em execução\n" \
       "                                        image.{brightness,contrast,gamma,temperature,tint,saturation}\n" \
       "                                        cam.{exp,iso,wb,kelvin,style,alo}\n" \
+      "                                        scale.mode {fsr,bilinear}, scale.sharpness 0..2 (0 = mais nítido)\n" \
       "                                        cam.style.{contrast,sharpness,saturation,tone}\n" \
       "                                        cam.autofocus 1 (foca uma vez)\n" \
       "  canon-eos-webcam probe                salva um quadro em /tmp/canon-eos-webcam-probe.jpg\n" \

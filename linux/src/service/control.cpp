@@ -5,6 +5,7 @@
 #include "log.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -31,22 +32,34 @@ std::string Hex(const std::vector<uint8_t>& d) {
 }
 
 
-// 1280x720 RGB -> width x (width*9/16) RGB (2x2 average for 640, nearest otherwise).
+// 1920x1080 RGB -> width x (width*9/16) RGB. Integer divisors of the width (640 = the panel's normal preview,
+// 960) take a box average over k x k pixels; anything else is nearest neighbour.
+template <int K>
+void BoxDown(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst, int w, int h) {
+    constexpr int kArea = K * K;
+    for (int y = 0; y < h; y++) {
+        uint8_t* o = &dst[size_t(y) * size_t(w) * 3];
+        const uint8_t* rows = &src[size_t(y) * K * kOutWidth * 3];
+        for (int x = 0; x < w; x++, o += 3) {
+            int acc[3] = {kArea / 2, kArea / 2, kArea / 2};
+            for (int dy = 0; dy < K; dy++) {
+                const uint8_t* p = rows + (size_t(dy) * kOutWidth + size_t(x) * K) * 3;
+                for (int dx = 0; dx < K; dx++, p += 3) { acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2]; }
+            }
+            o[0] = uint8_t(acc[0] / kArea);
+            o[1] = uint8_t(acc[1] / kArea);
+            o[2] = uint8_t(acc[2] / kArea);
+        }
+    }
+}
+
 void Downsize(const std::vector<uint8_t>& src, int width, std::vector<uint8_t>& dst, int& w, int& h) {
     if (width >= kOutWidth) { dst = src; w = kOutWidth; h = kOutHeight; return; }
     w = width & ~1;
     h = (w * kOutHeight / kOutWidth) & ~1;
     dst.resize(size_t(w) * size_t(h) * 3);
-    if (w == kOutWidth / 2) {
-        for (int y = 0; y < h; y++) {
-            const uint8_t* a = &src[size_t(y) * 2 * kOutWidth * 3];
-            const uint8_t* b = a + kOutWidth * 3;
-            uint8_t* o = &dst[size_t(y) * size_t(w) * 3];
-            for (int x = 0; x < w; x++, o += 3, a += 6, b += 6)
-                for (int k = 0; k < 3; k++) o[k] = uint8_t((a[k] + a[k + 3] + b[k] + b[k + 3] + 2) >> 2);
-        }
-        return;
-    }
+    if (w == kOutWidth / 3 && h == kOutHeight / 3) { BoxDown<3>(src, dst, w, h); return; }
+    if (w == kOutWidth / 2 && h == kOutHeight / 2) { BoxDown<2>(src, dst, w, h); return; }
     for (int y = 0; y < h; y++) {
         int sy = y * kOutHeight / h;
         for (int x = 0; x < w; x++) {
@@ -138,6 +151,9 @@ Json Control::ImageJson(uint32_t& version) const {
     j.Set("temperature", s.image.temperature);
     j.Set("tint", s.image.tint);
     j.Set("saturation", s.image.saturation);
+    // the scaling to 1080p travels with the image adjustments (same settings version)
+    j.Set("upscale", s.upscale == Upscale::Bilinear ? "bilinear" : "fsr");
+    j.Set("sharpness", std::round(double(s.sharpness) * 100) / 100);
     return j;
 }
 
@@ -218,6 +234,38 @@ void Control::HandleSet(Client& c, const Json& msg) {
             else if (name == "tint") i.tint = int(std::lround(num));
             else i.saturation = int(std::lround(num));
         });
+        Reply(c, id, "");
+        Wake();
+        return;
+    }
+
+    if (key == "scale.mode") {
+        Upscale u;
+        if (isNum) {
+            if (num != 0 && num != 1) { Reply(c, id, "bad_value"); return; }
+            u = num == 1 ? Upscale::Bilinear : Upscale::Fsr;
+        } else {
+            std::string t = text;
+            std::transform(t.begin(), t.end(), t.begin(), [](unsigned char ch) { return char(std::tolower(ch)); });
+            if (t == "fsr") u = Upscale::Fsr;
+            else if (t == "bilinear") u = Upscale::Bilinear;
+            else { Reply(c, id, "bad_value"); return; }
+        }
+        settings_.Update([&](Settings& s) { s.upscale = u; });
+        Reply(c, id, "");
+        Wake();
+        return;
+    }
+    if (key == "scale.sharpness") {
+        if (!isNum) {
+            char* end = nullptr;
+            std::string t = text;
+            std::replace(t.begin(), t.end(), ',', '.');
+            num = strtod(t.c_str(), &end);
+            if (t.empty() || *end != 0) { Reply(c, id, "bad_value"); return; }
+        }
+        if (num < 0 || num > 2) { Reply(c, id, "out_of_range"); return; }
+        settings_.Update([&](Settings& s) { s.sharpness = float(std::round(num * 100) / 100); });
         Reply(c, id, "");
         Wake();
         return;

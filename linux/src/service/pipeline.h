@@ -1,5 +1,5 @@
-// JPEG -> decode -> 16:9 crop -> [effects] -> image adjustments -> bilinear scale -> output format.
-// Plain C++ (the compiler vectorizes the hot loops); the maths of the adjustments and the YUV
+// JPEG -> decode -> 16:9 crop -> [effects] -> image adjustments -> upscale to 1920x1080 (FSR 1 or bilinear) -> output format.
+// Plain C++ (the compiler vectorizes the hot loops; the band work runs on a small persistent thread pool); the maths of the adjustments and the YUV
 // coefficients are the ones of src/app/imaging.cpp (BuildAdjust / AdjustPixel / LumaOf / CbOf / CrOf).
 #pragma once
 
@@ -12,15 +12,16 @@
 
 namespace canon_eos_webcam {
 
-constexpr int kOutWidth = 1280;
-constexpr int kOutHeight = 720;
+// The only format the virtual camera offers.
+constexpr int kOutWidth = 1920;
+constexpr int kOutHeight = 1080;
 
 struct RgbView {
     uint8_t* data = nullptr;  // R,G,B interleaved
     int width = 0, height = 0, stride = 0;
 };
 
-// Hook for the AI effects (Maxine, later): takes and returns the cropped RGB image, before scaling.
+// Hook for the AI effects (Maxine, later): takes and returns the cropped RGB image, before upscaling.
 class EffectStage {
 public:
     virtual ~EffectStage() = default;
@@ -45,7 +46,7 @@ public:
     void SetEffectStage(EffectStage* e) { effect_ = e; }
 
     // Decodes and processes one Live View JPEG. out receives the frame in the given format (resized as
-    // needed); rgb, if not null, receives the final 1280x720 RGB frame (what the panel previews).
+    // needed); rgb, if not null, receives the final 1920x1080 RGB frame (what the panel previews).
     // False if the JPEG can't be decoded (the frame is dropped).
     bool Process(const uint8_t* jpeg, size_t size, const Settings& s, std::vector<uint8_t>& out,
                  std::vector<uint8_t>* rgb, PipelineTimes* times = nullptr);

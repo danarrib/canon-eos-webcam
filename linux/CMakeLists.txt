@@ -25,6 +25,7 @@ add_executable(canon-eos-webcam
   src/service/ptp_usb.cpp
   src/service/settings.cpp
   src/service/pipeline.cpp
+  src/service/fsr1.cpp
   src/service/bridge.cpp
   src/service/pw_output.cpp
   src/service/control.cpp
@@ -33,6 +34,8 @@ add_executable(canon-eos-webcam
 )
 target_link_libraries(canon-eos-webcam PRIVATE PkgConfig::LIBUSB PkgConfig::TURBOJPEG PkgConfig::PIPEWIRE Threads::Threads)
 target_include_directories(canon-eos-webcam PRIVATE src)
+# the FSR 1 kernels are written to be auto-vectorized (an AVX2 copy is picked at runtime)
+set_source_files_properties(src/service/fsr1.cpp PROPERTIES COMPILE_OPTIONS "-O3")
 
 # Panel: GTK4 + TurboJPEG (preview decoding); talks to the service over the control socket only.
 pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)

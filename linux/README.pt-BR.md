@@ -34,14 +34,17 @@ precisa estar rodando (está, no Omarchy). Aí "Canon EOS Webcam" aparece na lis
 com `busctl --user get-property org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop org.freedesktop.portal.Camera IsCameraPresent`,
 que deve responder `b true` enquanto o serviço roda.)
 
-A imagem é 1280×720 a 30 fps em um único formato de pixel (YUY2 por padrão).
+A imagem é 1920×1080 a 30 fps em um único formato de pixel (YUY2 por padrão). O quadro do Live View tem só cerca de
+1056×594 depois do corte 16:9, então é ampliado com o AMD FidelityFX Super Resolution 1 (veja "Como funciona").
 
 ## Painel de ajustes
 
 Rode `canon-eos-webcam-panel` (ou "Ajustes da webcam Canon" no lançador). À esquerda: pré-visualização ao vivo (a
 roda do mouse ou os botões dão zoom 100 / 200 / 300 %, arrastar move, duplo clique ajusta; com zoom ele pede o quadro
-completo de 1280 de largura, para conferir o foco). À direita: os seis **ajustes de imagem** feitos pelo
-canon-eos-webcam (brilho, contraste, gamma, temperatura, tom, saturação) e os **ajustes da câmera**, gravados na
+completo de 1920 de largura, para conferir o foco). À direita: os seis **ajustes de imagem** feitos pelo
+canon-eos-webcam (brilho, contraste, gamma, temperatura, tom, saturação), a **escala para 1080p** (FSR 1 ou bilinear,
+e a nitidez do FSR: alterne com o zoom em 100 % para ver se o FSR compensa o uso de CPU na sua máquina) e os
+**ajustes da câmera**, gravados na
 própria Canon (compensação de exposição, ISO, balanço de branco, temperatura de cor, Picture Style com contraste /
 nitidez / saturação / tom de cor, Auto Lighting Optimizer), além de um botão **Foco automático**. Só o que o modo
 atual da câmera permite fica habilitado. Os sliders da câmera enviam quando você solta. Abrir uma segunda vez só traz a primeira janela para a frente. Abrir o
@@ -72,6 +75,8 @@ language = auto    ; auto | en | pt
 [linux]
 crop = bottom      ; bottom | center | top : qual faixa 16:9 do quadro 3:2 do Live View é usada
 format = yuy2      ; yuy2 | i420 | nv12 : formato de pixel do PipeWire (lido na partida)
+upscale = fsr      ; fsr | bilinear : como o recorte é ampliado para 1920x1080 (vale na hora)
+sharpness = 0.20   ; 0.0..2.0 : nitidez do FSR (RCAS) em stops, 0 = mais nítido (vale na hora)
 loglevel = info    ; info | debug
 ```
 
@@ -94,7 +99,7 @@ câmera virtual repete a última imagem por até 8 s em vez do quadro cinza.
 |---|---|
 | `canon-eos-webcam run` | o serviço em primeiro plano (o que o systemd inicia) |
 | `canon-eos-webcam get` | estado do serviço em execução (câmera, fps, ajustes de imagem, propriedades da câmera) |
-| `canon-eos-webcam set <chave> <valor>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `cam.style.{contrast,sharpness,saturation,tone}`, `cam.autofocus 1` (foca uma vez); os valores da câmera aceitam números (`0x81`) ou nomes em inglês (`daylight`, `standard`, ISO `400`) |
+| `canon-eos-webcam set <chave> <valor>` | `image.{brightness,contrast,gamma,temperature,tint,saturation}`, `cam.{exp,iso,wb,kelvin,style,alo}`, `scale.mode` (`fsr`/`bilinear`), `scale.sharpness` (0–2), `cam.style.{contrast,sharpness,saturation,tone}`, `cam.autofocus 1` (foca uma vez); os valores da câmera aceitam números (`0x81`) ou nomes em inglês (`daylight`, `standard`, ISO `400`) |
 | `canon-eos-webcam probe` | abre a câmera, salva um quadro em `/tmp/canon-eos-webcam-probe.jpg`, desliga tudo |
 | `canon-eos-webcam bench [segundos]` | captura + processamento sem PipeWire: fps, ms por quadro, CPU |
 | `canon-eos-webcam process in.jpg out.yuv [debug.jpg]` | roda o pipeline sobre um JPEG, sem câmera |
@@ -115,8 +120,11 @@ câmera virtual repete a última imagem por até 8 s em vez do quadro cinza.
 O `canon-eos-webcam run` tem quatro threads: **captura** (a única dona da sessão USB/PTP: conecta, busca os JPEGs do
 Live View a ~30 fps, lê os eventos da câmera, executa as gravações de propriedades enfileiradas entre os quadros e
 reconecta sozinha), **processamento** (sempre pega o JPEG mais recente: decodifica com TurboJPEG → recorte 16:9 →
-ajustes de imagem → escala bilinear para 1280×720 → YUV; há um estágio vazio para os efeitos de IA da versão
-Windows), **PipeWire** (o stream é o driver do grafo, disparado por um timer de 30 Hz só enquanto há consumidor
+ajustes de imagem → ampliação para 1920×1080 (FSR 1: ampliação adaptativa a bordas EASU + nitidez RCAS, um port em CPU
+do FidelityFX-FSR da AMD, licença MIT, em `src/service/fsr1.cpp`, AVX2 escolhido em tempo de execução com fallback em
+C++ puro; ou `upscale = bilinear`) → YUV, com o trabalho dividido em faixas horizontais numa pequena pool de threads
+(`CANON_EOS_WEBCAM_THREADS` muda o tamanho, padrão até 16; cerca de 8 ms por quadro no total num Ryzen 9 5950X); há um
+estágio vazio para os efeitos de IA da versão Windows), **PipeWire** (o stream é o driver do grafo, disparado por um timer de 30 Hz só enquanto há consumidor
 ligado; repete o último quadro ou manda um quadro de espera) e **controle** (um socket Unix,
 `$XDG_RUNTIME_DIR/canon-eos-webcam.sock`, um objeto JSON por linha, usado pelo painel e por `get`/`set`; também vigia
 o `settings.ini` com inotify). O painel é um programa GTK4 separado que só fala com esse socket

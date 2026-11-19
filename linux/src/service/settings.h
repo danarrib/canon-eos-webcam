@@ -35,11 +35,14 @@ struct ImageSettings {
 
 enum class CropAnchor : int { Bottom = 0, Center = 1, Top = 2 };
 enum class OutFormat : int { Yuy2 = 0, I420 = 1, Nv12 = 2 };
+enum class Upscale : int { Fsr = 0, Bilinear = 1 };
 
 struct Settings {
     ImageSettings image;
     CropAnchor crop = CropAnchor::Bottom;  // [linux] crop (live)
     OutFormat format = OutFormat::Yuy2;    // [linux] format (read at startup)
+    Upscale upscale = Upscale::Fsr;        // [linux] upscale = fsr | bilinear (live)
+    float sharpness = 0.2f;                // [linux] sharpness: FSR RCAS, in stops, 0.0 (sharpest)..2.0 (live)
     bool debugLog = false;                 // [linux] loglevel = debug
 };
 
